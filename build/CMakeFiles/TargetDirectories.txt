@@ -1,0 +1,3 @@
+/home/developer/Projects/Something/build/CMakeFiles/Something.dir
+/home/developer/Projects/Something/build/CMakeFiles/edit_cache.dir
+/home/developer/Projects/Something/build/CMakeFiles/rebuild_cache.dir
