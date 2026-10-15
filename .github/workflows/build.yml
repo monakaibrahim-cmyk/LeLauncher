@@ -70,14 +70,22 @@ jobs:
         with:
           arch: x64
 
-      - name: Initialize vcpkg Cache Directory
+      - name: Export GitHub Actions Cache Environment for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Initialize vcpkg Cache Configuration
         shell: pwsh
         run: |
           $cacheDir = Join-Path $env:RUNNER_TEMP "vcpkg-cache"
           New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite;files,$cacheDir,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Cache vcpkg Binary Artifacts
+      - name: Cache vcpkg Binary Artifacts (Filesystem Fallback)
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/vcpkg-cache
