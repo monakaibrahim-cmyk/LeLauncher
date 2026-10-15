@@ -57,3 +57,8 @@ dkms.conf
 # Build Directory
 build/
 [B]uild/
+
+# excluded files
+*.dat
+*.log
+Logs/
