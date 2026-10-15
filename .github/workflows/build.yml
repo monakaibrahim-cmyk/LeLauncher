@@ -61,8 +61,6 @@ jobs:
   build-windows:
     name: Build Windows (MSVC)
     runs-on: windows-latest
-    env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -71,6 +69,13 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Initialize vcpkg Cache Directory
+        shell: pwsh
+        run: |
+          $cacheDir = Join-Path $env:RUNNER_TEMP "vcpkg-cache"
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Cache vcpkg Binary Artifacts
         uses: actions/cache@v4
@@ -122,6 +127,9 @@ jobs:
           }
           if (Test-Path "data") {
             Copy-Item -Recurse "data" -Destination "$DIST_DIR/data"
+          }
+          if (Test-Path "icon.ico") {
+            Copy-Item "icon.ico" -Destination "$DIST_DIR/"
           }
 
           # Bundle all required runtime DLLs from build directory and vcpkg

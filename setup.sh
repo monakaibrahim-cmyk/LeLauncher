@@ -3,7 +3,7 @@
 # LeLauncher Automated Bootstrap & Build Script (WotLK Edition)
 #
 # Detects operating system, ensures basic build tools are present,
-# configures CMake, and builds the pure Raylib/Raygui launcher.
+# configures CMake, and builds the GTK 4 launcher.
 # ==============================================================================
 
 set -euo pipefail

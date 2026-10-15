@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.23)
 project(LeLauncher LANGUAGES C)
 
-set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 message(STATUS "==================================================================")
@@ -13,11 +13,18 @@ message(STATUS "================================================================
 # ==============================================================================
 if (MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    add_compile_options(/std:clatest)
 endif()
 
 # ==============================================================================
 # GTK 4 and GLib Tooling Discovery
 # ==============================================================================
+if (DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(ENV{PKG_CONFIG_PATH} "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/pkgconfig;${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/pkgconfig;$ENV{PKG_CONFIG_PATH}")
+elseif (DEFINED ENV{VCPKG_ROOT} AND WIN32)
+    set(ENV{PKG_CONFIG_PATH} "$ENV{VCPKG_ROOT}/installed/x64-windows/lib/pkgconfig;$ENV{VCPKG_ROOT}/installed/x64-windows/share/pkgconfig;$ENV{PKG_CONFIG_PATH}")
+endif()
+
 find_package(GTK4 CONFIG QUIET)
 if (TARGET GTK4::GTK4)
     message(STATUS "Found GTK4 via CMake Config: GTK4::GTK4")
@@ -39,6 +46,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core
     ${CMAKE_CURRENT_SOURCE_DIR}/include/network
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/client
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 if (DEFINED GTK4_INCLUDE_DIRS)
@@ -173,7 +181,11 @@ endif()
 
 if (WIN32)
     enable_language(RC)
-    list(APPEND APP_SOURCES data/LeLauncher.rc)
+    list(APPEND APP_SOURCES
+        data/LeLauncher.rc
+        src/client/Utils.c
+        src/client/Patch.c
+    )
 endif()
 
 add_executable(${CMAKE_PROJECT_NAME} ${APP_SOURCES})

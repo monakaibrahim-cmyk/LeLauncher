@@ -26,6 +26,7 @@
     #ifndef SW_SHOWNORMAL
         #define SW_SHOWNORMAL 1
     #endif
+    #include <client/Patch.h>
 #else
     #include <unistd.h>
 #endif
@@ -58,7 +59,7 @@ typedef struct {
     GtkLabel            *download_file_label;
 
     /* Background updater worker */
-    GThread             *patch_thread;
+    volatile int        patch_running;
     volatile int        patch_cancel;
 
     LiveFeedClient      *live_feed;
@@ -79,6 +80,8 @@ static gboolean __log_idle_cb__(gpointer user_data) {
         GtkTextIter end;
         gtk_text_buffer_get_end_iter(buf, &end);
         gtk_text_buffer_insert(buf, &end, data->line, -1);
+        GtkTextMark *mark = gtk_text_buffer_get_insert(buf);
+        gtk_text_view_scroll_to_mark(data->ctx->log_view, mark, 0.0, FALSE, 0.0, 1.0);
     }
     if (data) {
         g_free(data->line);
@@ -277,12 +280,17 @@ static void __verify_account_handler__(GtkButton *btn, gpointer user_data) {
 static void __play_game_handler__(GtkButton *btn, gpointer user_data) {
     (void)btn;
     (void)user_data;
-    LOG_INFO("SYS", "Starting game client executable (WoW.exe)...");
+    LOG_INFO("SYS", "Starting game client executable...");
 
 #if defined(_WIN32)
-    HINSTANCE res = ShellExecuteA(NULL, "open", "WoW.exe", NULL, NULL, SW_SHOWNORMAL);
+    const char *target = __find_game_client_executable__();
+    if (__is_regular_file__(target)) {
+        LOG_INFO("PATCH", "Verifying and applying client patches (LAA + launcher hook) to %s...", target);
+        __apply_patches__(target);
+    }
+    HINSTANCE res = ShellExecuteA(NULL, "open", target, NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)res <= 32) {
-        ShellExecuteA(NULL, "open", "Wow.exe", NULL, NULL, SW_SHOWNORMAL);
+        ShellExecuteA(NULL, "open", "WoW.exe", NULL, NULL, SW_SHOWNORMAL);
     }
 #else
     if (system("./WoW.exe &") != 0 && system("wine WoW.exe &") != 0) {
@@ -441,6 +449,7 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
         pd->finished = TRUE;
         g_idle_add(__patch_progress_idle_cb__, pd);
         if (has_master) __mfil_free_master__(&master);
+        ctx->patch_running = 0;
         return NULL;
     }
 
@@ -499,6 +508,7 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
     if (has_master) __mfil_free_master__(&master);
 
     LOG_INFO("PATCH", "Patch verification finished (%zu verified, %zu downloaded)", verified, downloaded);
+    ctx->patch_running = 0;
     return NULL;
 }
 
@@ -506,9 +516,16 @@ static void __start_patch_process__(GtkButton *btn, gpointer user_data) {
     AppWindowContext *ctx = (AppWindowContext *)user_data;
     if (!ctx) return;
 
+    if (ctx->patch_running) {
+        LOG_INFO("PATCH", "Patch verification is already in progress.");
+        return;
+    }
+
     if (btn) gtk_widget_set_sensitive(GTK_WIDGET(btn), FALSE);
     ctx->patch_cancel = 0;
-    ctx->patch_thread = g_thread_new("patch_worker", __patch_worker_thread__, ctx);
+    ctx->patch_running = 1;
+    GThread *th = g_thread_new("patch_worker", __patch_worker_thread__, ctx);
+    g_thread_unref(th);
 }
 
 static void __refresh_realm_handler__(GtkButton *btn, gpointer user_data) {
@@ -532,6 +549,10 @@ static void __app_activate__(GtkApplication *app, gpointer user_data) {
         ctx->builder = gtk_builder_new_from_resource("/com/example/LeLauncher/window.ui");
     }
     GObject *window = gtk_builder_get_object(ctx->builder, "app_window");
+    if (!window) {
+        g_critical("Failed to locate 'app_window' object from UI builder!");
+        return;
+    }
     gtk_window_set_application(GTK_WINDOW(window), app);
 
     /* Bind widgets */
@@ -616,12 +637,21 @@ int app_window_run(int argc, char **argv) {
     int status = g_application_run(G_APPLICATION(app), argc, argv);
 
     /* Cleanup */
+    __logger_set_ui_callback__(NULL, NULL);
+
+    ctx.patch_cancel = 1;
+    while (ctx.patch_running) {
+        g_usleep(10000);
+    }
+
     if (ctx.live_feed) {
         __live_feed_stop__(ctx.live_feed);
         __live_feed_destroy__(ctx.live_feed);
+        ctx.live_feed = NULL;
     }
     if (ctx.builder) {
         g_object_unref(ctx.builder);
+        ctx.builder = NULL;
     }
     g_object_unref(app);
     return status;

@@ -10,6 +10,12 @@
 #define VECTOR_INIT_CAPACITY 4
 #define VECTOR_GROWTH_FACTOR 2
 
+#if defined(_MSC_VER)
+    #ifndef __attribute__
+        #define __attribute__(x)
+    #endif
+#endif
+
 /*
  * Vector Template Generator
 */

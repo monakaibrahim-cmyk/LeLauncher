@@ -86,8 +86,15 @@ exit /b 1
 
 :DO_MSVC_BUILD
 echo [INFO] Configuring with MSVC and CMake...
-if exist "vcpkg\scripts\buildsystems\vcpkg.cmake" (
-    cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="vcpkg\scripts\buildsystems\vcpkg.cmake"
+set "VCPKG_CMAKE="
+if exist "vcpkg\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=vcpkg\scripts\buildsystems\vcpkg.cmake"
+if not defined VCPKG_CMAKE if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
+if not defined VCPKG_CMAKE if defined VCPKG_INSTALLATION_ROOT if exist "%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake"
+if not defined VCPKG_CMAKE if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake"
+
+if defined VCPKG_CMAKE (
+    echo [INFO] Using vcpkg toolchain: !VCPKG_CMAKE!
+    cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="!VCPKG_CMAKE!"
 ) else (
     cmake -B build -G "Visual Studio 17 2022" -A x64
 )
@@ -138,7 +145,11 @@ if exist "vcpkg_installed\x64-windows\share\glib-2.0\schemas" (
 )
 
 if exist "WoW.mfil" copy /y "WoW.mfil" "%DIST_DIR%\" >nul
+if exist "icon.ico" copy /y "icon.ico" "%DIST_DIR%\" >nul
 if exist "data" xcopy /e /i /y "data" "%DIST_DIR%\data" >nul
+
+powershell -NoProfile -Command "Compress-Archive -Path '%DIST_DIR%\*' -DestinationPath '%DIST_DIR%.zip' -Force" 2>nul
+if exist "%DIST_DIR%.zip" echo [SUCCESS] Portable archive created: %DIST_DIR%.zip
 
 echo [SUCCESS] Distribution folder created at %DIST_DIR%
 exit /b 0
