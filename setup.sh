@@ -82,22 +82,34 @@ echo -e "Target Configuration: ${YELLOW}${BUILD_TYPE}${NC}"
 
 # Check for root/sudo elevation helper
 SUDO=""
-if [[ $EUID -ne 0 ]]; then
-    if command -v sudo >/dev/null 2>&1; then
-        SUDO="sudo"
+CAN_SUDO_NONINTERACTIVE=0
+if [[ $EUID -eq 0 ]]; then
+    CAN_SUDO_NONINTERACTIVE=1
+elif command -v sudo >/dev/null 2>&1; then
+    if sudo -n true >/dev/null 2>&1; then
+        SUDO="sudo -n"
+        CAN_SUDO_NONINTERACTIVE=1
     else
-        echo -e "${YELLOW}Warning: 'sudo' not detected. If packages need to be installed, please run as root.${NC}"
+        SUDO="sudo"
+        CAN_SUDO_NONINTERACTIVE=0
     fi
 fi
 
 # Detect missing critical tools or headers
+__get_missing_dependencies__() {
+    local missing=()
+    if ! command -v cmake >/dev/null 2>&1; then missing+=("cmake"); fi
+    if ! command -v git >/dev/null 2>&1; then missing+=("git"); fi
+    if ! command -v pkg-config >/dev/null 2>&1 && ! command -v pkgconf >/dev/null 2>&1; then missing+=("pkg-config"); fi
+    if ! command -v glib-compile-resources >/dev/null 2>&1; then missing+=("glib-compile-resources (libglib2.0-dev-bin)"); fi
+    if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then missing+=("gtk4 (libgtk-4-dev)"); fi
+    echo "${missing[*]}"
+}
+
 __needs_dependencies__() {
-    if ! command -v cmake >/dev/null 2>&1; then return 0; fi
-    if ! command -v git >/dev/null 2>&1; then return 0; fi
-    if ! command -v pkg-config >/dev/null 2>&1 && ! command -v pkgconf >/dev/null 2>&1; then return 0; fi
-    if ! command -v glib-compile-resources >/dev/null 2>&1; then return 0; fi
-    if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then return 0; fi
-    return 1
+    local missing
+    missing=$(__get_missing_dependencies__)
+    [[ -n "$missing" ]]
 }
 
 # Detect distribution and install dependencies
@@ -114,6 +126,34 @@ __install_dependencies__() {
     fi
 
     echo -e "Detected platform: ${BOLD}${DISTRO_ID}${NC}"
+
+    # Check if sudo elevation is missing in a non-interactive shell (such as GitHub Actions self-hosted runner)
+    if [[ $CAN_SUDO_NONINTERACTIVE -eq 0 ]] && ! [ -t 0 ]; then
+        local missing_pkgs
+        missing_pkgs=$(__get_missing_dependencies__)
+        echo ""
+        echo -e "${RED}${BOLD}===============================================================================${NC}"
+        echo -e "${RED}${BOLD}  Error: Missing required build dependencies:${NC} ${YELLOW}${missing_pkgs}${NC}"
+        echo -e "${RED}${BOLD}  'sudo' requires an interactive password, which cannot be prompted in CI.${NC}"
+        echo -e "${RED}${BOLD}===============================================================================${NC}"
+        echo ""
+        echo -e "${CYAN}To fix this, please run this one-time command on your VPS terminal:${NC}"
+        echo ""
+        if [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop) ]] || [[ "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
+            echo -e "  ${BOLD}sudo apt-get update && sudo apt-get install -y build-essential cmake git pkg-config libgtk-4-dev libglib2.0-dev-bin${NC}"
+        elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma) ]] || [[ "$DISTRO_LIKE" =~ (fedora|rhel) ]]; then
+            echo -e "  ${BOLD}sudo dnf install -y gcc gcc-c++ make cmake git pkgconf-pkg-config gtk4-devel glib2-devel${NC}"
+        elif [[ "$DISTRO_ID" =~ (arch|manjaro|endeavouros) ]] || [[ "$DISTRO_LIKE" =~ arch ]]; then
+            echo -e "  ${BOLD}sudo pacman -S --needed --noconfirm base-devel cmake git pkgconf gtk4 glib2-devel${NC}"
+        else
+            echo -e "  Install the GTK 4 development stack using your distribution package manager."
+        fi
+        echo ""
+        echo -e "${CYAN}Alternatively, allow your runner user to run sudo without a password:${NC}"
+        echo -e "  ${BOLD}echo \"\$USER ALL=(ALL) NOPASSWD: ALL\" | sudo tee /etc/sudoers.d/\$USER${NC}"
+        echo ""
+        exit 1
+    fi
 
     if [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop) ]] || [[ "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
         echo -e "${CYAN}Installing GTK 4, GLib tools, and build essentials via apt...${NC}"
