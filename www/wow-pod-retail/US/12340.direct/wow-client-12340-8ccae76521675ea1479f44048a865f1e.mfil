@@ -1,6 +1,6 @@
 version=3
 serverpath=base
-	path=
+	path=base/Client
 file=Battle.net.dll
 	name=Battle.net.dll
 	size=15588224

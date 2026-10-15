@@ -1,6 +1,6 @@
 version=3
 serverpath=base
-	path=
+	path=base
 file=Data/common-2.MPQ
 	name=Data/common-2.MPQ
 	size=1810430636

@@ -785,10 +785,22 @@ CURLStatus __mfil_download_file__(const char *base_location, const MfilManifest 
         return CURLDL_ERR_BAD_ARG;
     }
 
-    const char *subpath             = __mfil_get_serverpath__(manifest, file->path);
-    char url[2048];
+    const char *subpath = __mfil_get_serverpath__(manifest, file->path);
+    char resolved_subpath[256];
 
-    if (!__mfil_build_url__(base_location, subpath, file->name, url, sizeof(url))) {
+    if (subpath && *subpath) {
+        __copy_string__(resolved_subpath, sizeof(resolved_subpath), subpath);
+    } else {
+        /* Default based on webserver structure: base/Data for data files, base/Client for client binaries */
+        if (strncmp(file->name, "Data/", 5) == 0 || strncmp(file->name, "Data\\", 5) == 0) {
+            __copy_string__(resolved_subpath, sizeof(resolved_subpath), "base");
+        } else {
+            __copy_string__(resolved_subpath, sizeof(resolved_subpath), "base/Client");
+        }
+    }
+
+    char url[2048];
+    if (!__mfil_build_url__(base_location, resolved_subpath, file->name, url, sizeof(url))) {
         return CURLDL_ERR_BAD_ARG;
     }
 
@@ -836,6 +848,24 @@ CURLStatus __mfil_download_file__(const char *base_location, const MfilManifest 
     opt.output_path                 = full_dest_path;
 
     CURLStatus status               = __download__(&opt, result);
+
+    /* Fallback on HTTP 404: try alternate webserver directory */
+    if (status != CURLDL_OK && result && result->http_code == 404) {
+        const char *alt_subpath = NULL;
+        if (strcmp(resolved_subpath, "base/Client") == 0) {
+            alt_subpath = "base";
+        } else if (strcmp(resolved_subpath, "base") == 0) {
+            alt_subpath = "base/Client";
+        }
+
+        if (alt_subpath) {
+            char alt_url[2048];
+            if (__mfil_build_url__(base_location, alt_subpath, file->name, alt_url, sizeof(alt_url))) {
+                opt.url = alt_url;
+                status = __download__(&opt, result);
+            }
+        }
+    }
 
     if (status == CURLDL_OK || status == CURLDL_ALREADY_COMPLETE) {
         if (file->checksum[0] != '\0') {
