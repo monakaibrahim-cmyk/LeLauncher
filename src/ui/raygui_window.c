@@ -1,3 +1,49 @@
+#if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOGDI
+        #define NOGDI
+    #endif
+    #ifndef NOUSER
+        #define NOUSER
+    #endif
+#endif
+
+/* Include Raylib and Raygui FIRST to prevent Win32 GDI/User symbol collision */
+#include "raylib.h"
+
+#define RAYGUI_IMPLEMENTATION
+#include "raygui.h"
+
+#if defined(_WIN32)
+    #include <windows.h>
+    #include <shellapi.h>
+
+    /* Undefine any Windows macro names that clash with Raylib */
+    #ifdef Rectangle
+        #undef Rectangle
+    #endif
+    #ifdef CloseWindow
+        #undef CloseWindow
+    #endif
+    #ifdef ShowCursor
+        #undef ShowCursor
+    #endif
+    #ifdef DrawText
+        #undef DrawText
+    #endif
+    #ifdef DrawTextEx
+        #undef DrawTextEx
+    #endif
+    #ifdef LoadImage
+        #undef LoadImage
+    #endif
+#else
+    #include <pthread.h>
+    #include <unistd.h>
+#endif
+
 #include <ui/raygui_window.h>
 #include <core/Version.h>
 #include <core/Globals.h>
@@ -14,25 +60,6 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
-
-#if defined(_WIN32)
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-    #ifndef NOGDI
-        #define NOGDI
-    #endif
-    #include <windows.h>
-    #include <shellapi.h>
-#else
-    #include <pthread.h>
-    #include <unistd.h>
-#endif
-
-#include "raylib.h"
-
-#define RAYGUI_IMPLEMENTATION
-#include "raygui.h"
 
 #define MAX_LOG_LINES    128
 #define LOG_LINE_LEN     256
