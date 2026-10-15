@@ -9,8 +9,16 @@
 #include <stdarg.h>
 #include <time.h>
 
-#if !defined(_WIN32)
-#include <sys/time.h>
+#if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOGDI
+        #define NOGDI
+    #endif
+    #include <windows.h>
+#else
+    #include <sys/time.h>
 #endif
 
 typedef struct {
@@ -123,26 +131,23 @@ static const char *__level_to_color__(LogLevel level) {
 }
 
 static void __get_current_timestamp__(char *buf, size_t max_len) {
+#if defined(_WIN32)
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    snprintf(buf, max_len, "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond, (int)st.wMilliseconds);
+#else
     time_t now = time(NULL);
     struct tm tm_buf;
-#if defined(_WIN32)
-    localtime_s(&tm_buf, &now);
-#else
     localtime_r(&now, &tm_buf);
-#endif
-
-    int millis = 0;
-#if defined(_WIN32)
-    millis = (int)(GetTickCount() % 1000);
-#else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    millis = (int)(tv.tv_usec / 1000);
-#endif
-
+    int millis = (int)(tv.tv_usec / 1000);
     snprintf(buf, max_len, "%04d-%02d-%02d %02d:%02d:%02d.%03d",
              tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
              tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, millis);
+#endif
 }
 
 static void __format_entry__(const LogEntry *e, char *out, size_t max_len) {
