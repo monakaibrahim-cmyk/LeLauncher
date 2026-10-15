@@ -21,6 +21,7 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 BUILD_TYPE="Release"
 CLEAN_BUILD=0
 DEPS_ONLY=0
+PACKAGE_BUNDLE=0
 RUN_AFTER=0
 
 __usage__() {
@@ -31,6 +32,7 @@ __usage__() {
     echo "  --debug        Build in Debug configuration (with debug symbols & [file:line] logging)"
     echo "  --clean        Remove existing build directory before compiling"
     echo "  --deps-only    Install required system dependencies without building"
+    echo "  --package      Package built launcher and runtime assets into dist/ tarball"
     echo "  --run          Execute the launcher immediately after a successful build"
     echo "  -h, --help     Show this help message"
     echo ""
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --deps-only)
             DEPS_ONLY=1
+            shift
+            ;;
+        --package)
+            PACKAGE_BUNDLE=1
             shift
             ;;
         --run)
@@ -206,6 +212,35 @@ echo -e "${CYAN}Compiling LeLauncher using ${CPU_CORES} parallel cores...${NC}"
 cmake --build "$BUILD_DIR" --parallel "$CPU_CORES"
 
 echo -e "${GREEN}${BOLD}✓ Build complete!${NC} Binary location: ${YELLOW}${BUILD_DIR}/LeLauncher${NC}"
+
+# Package distribution bundle if requested
+if [[ $PACKAGE_BUNDLE -eq 1 ]]; then
+    echo -e "${CYAN}Packaging release distribution bundle...${NC}"
+    ARCH=$(uname -m)
+    DIST_DIR="${SCRIPT_DIR}/dist"
+    BUNDLE_NAME="LeLauncher-Linux-${ARCH}"
+    BUNDLE_DIR="${DIST_DIR}/${BUNDLE_NAME}"
+    TARBALL_PATH="${DIST_DIR}/${BUNDLE_NAME}.tar.gz"
+
+    rm -rf "$BUNDLE_DIR" "$TARBALL_PATH"
+    mkdir -p "$BUNDLE_DIR"
+
+    cp "${BUILD_DIR}/LeLauncher" "${BUNDLE_DIR}/"
+    if [[ "$BUILD_TYPE" == "Release" ]] && command -v strip >/dev/null 2>&1; then
+        echo -e "${CYAN}Stripping debug symbols from release binary...${NC}"
+        strip "${BUNDLE_DIR}/LeLauncher" || true
+    fi
+
+    if [[ -f "${SCRIPT_DIR}/WoW.mfil" ]]; then
+        cp "${SCRIPT_DIR}/WoW.mfil" "${BUNDLE_DIR}/"
+    fi
+    if [[ -d "${SCRIPT_DIR}/data" ]]; then
+        cp -r "${SCRIPT_DIR}/data" "${BUNDLE_DIR}/"
+    fi
+
+    tar -czf "$TARBALL_PATH" -C "$DIST_DIR" "$BUNDLE_NAME"
+    echo -e "${GREEN}${BOLD}✓ Distribution bundle created:${NC} ${YELLOW}${TARBALL_PATH}${NC}"
+fi
 
 # Run binary if requested
 if [[ $RUN_AFTER -eq 1 ]]; then

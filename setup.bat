@@ -6,8 +6,21 @@ echo  LeLauncher Automated Setup ^& Build for Windows
 echo ===============================================================================
 
 set "BUILD_TYPE=Release"
-if "%~1"=="--debug" (
-    set "BUILD_TYPE=Debug"
+set "DO_PACKAGE=0"
+set "DO_CLEAN=0"
+
+for %%A in (%*) do (
+    if /I "%%A"=="--debug" set "BUILD_TYPE=Debug"
+    if /I "%%A"=="--release" set "BUILD_TYPE=Release"
+    if /I "%%A"=="--clean" set "DO_CLEAN=1"
+    if /I "%%A"=="--package" set "DO_PACKAGE=1"
+)
+
+if "%DO_CLEAN%"=="1" (
+    if exist "build" (
+        echo [INFO] Cleaning existing build directory...
+        rmdir /s /q "build"
+    )
 )
 
 REM Check if pkg-config and gtk4 are already available in PATH
@@ -36,6 +49,7 @@ if defined MSYS2_ROOT (
     "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%CD%' && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE% && cmake --build build"
     if %ERRORLEVEL% EQU 0 (
         echo [SUCCESS] Build complete! Executable: build\LeLauncher.exe
+        if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
         exit /b 0
     ) else (
         echo [ERROR] Build failed.
@@ -70,8 +84,24 @@ echo [INFO] Compiling LeLauncher...
 cmake --build build --config %BUILD_TYPE%
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] Build complete! Executable located in build\
+    if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
     exit /b 0
 ) else (
     echo [ERROR] Compilation failed.
     exit /b 1
 )
+
+:PACKAGE_BUNDLE
+echo [INFO] Packaging Windows distribution bundle...
+set "DIST_DIR=dist\LeLauncher-Windows-x64"
+if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+if exist "dist\LeLauncher-Windows-x64.zip" del /f /q "dist\LeLauncher-Windows-x64.zip"
+if not exist "dist" mkdir "dist"
+mkdir "%DIST_DIR%"
+if exist "build\LeLauncher.exe" copy "build\LeLauncher.exe" "%DIST_DIR%\" >nul
+if exist "build\Release\LeLauncher.exe" copy "build\Release\LeLauncher.exe" "%DIST_DIR%\" >nul
+if exist "WoW.mfil" copy "WoW.mfil" "%DIST_DIR%\" >nul
+if exist "data" xcopy /e /i /y "data" "%DIST_DIR%\data" >nul
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\LeLauncher-Windows-x64' -DestinationPath 'dist\LeLauncher-Windows-x64.zip' -Force"
+echo [SUCCESS] Distribution package created: dist\LeLauncher-Windows-x64.zip
+exit /b 0

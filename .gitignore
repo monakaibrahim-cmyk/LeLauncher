@@ -57,6 +57,11 @@ dkms.conf
 # Build Directory
 build/
 [B]uild/
+dist/
+
+# Archives
+*.tar.gz
+*.zip
 
 # excluded files
 *.dat

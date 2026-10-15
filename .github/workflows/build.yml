@@ -1,0 +1,194 @@
+name: Build & Package Artifacts
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Configuration (Release or Debug)'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # 1. Linux Build Job (Runs on Self-Hosted Debian VPS Runner)
+  # ============================================================================
+  build-linux:
+    name: Build Linux (Self-Hosted Runner)
+    runs-on: self-hosted
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compile and Package LeLauncher
+        run: |
+          chmod +x ./setup.sh
+          BUILD_CFG="${{ inputs.build_type || 'Release' }}"
+          if [ "$BUILD_CFG" = "Debug" ]; then
+            ./setup.sh --clean --debug --package
+          else
+            ./setup.sh --clean --release --package
+          fi
+
+      - name: Upload Linux Distribution Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LeLauncher-Linux-x86_64
+          path: dist/LeLauncher-Linux-*.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+
+  # ============================================================================
+  # 2. Windows Build Job (Runs on GitHub-Hosted Windows Runner with MSYS2 UCRT64)
+  # ============================================================================
+  build-windows:
+    name: Build Windows (UCRT64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 UCRT64 Environment
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gtk4
+            zip
+
+      - name: Configure and Compile LeLauncher
+        shell: msys2 {0}
+        run: |
+          BUILD_CFG="${{ inputs.build_type || 'Release' }}"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="${BUILD_CFG}"
+          cmake --build build
+
+      - name: Bundle Standalone Windows Distribution
+        shell: msys2 {0}
+        run: |
+          DIST_DIR="dist/LeLauncher-Windows-x64"
+          rm -rf "${DIST_DIR}" LeLauncher-Windows-x64.zip
+          mkdir -p "${DIST_DIR}"
+
+          # Copy primary executable and runtime game data
+          cp build/LeLauncher.exe "${DIST_DIR}/"
+          if [ -f "WoW.mfil" ]; then
+            cp WoW.mfil "${DIST_DIR}/"
+          fi
+          if [ -d "data" ]; then
+            cp -r data "${DIST_DIR}/"
+          fi
+
+          # Bundle GTK4 compiled GSettings schemas
+          if [ -f "${MINGW_PREFIX}/share/glib-2.0/schemas/gschemas.compiled" ]; then
+            mkdir -p "${DIST_DIR}/share/glib-2.0/schemas"
+            cp "${MINGW_PREFIX}/share/glib-2.0/schemas/gschemas.compiled" "${DIST_DIR}/share/glib-2.0/schemas/"
+          fi
+
+          # Bundle icon themes for GTK4 widgets
+          if [ -d "${MINGW_PREFIX}/share/icons/hicolor" ]; then
+            mkdir -p "${DIST_DIR}/share/icons"
+            cp -r "${MINGW_PREFIX}/share/icons/hicolor" "${DIST_DIR}/share/icons/"
+          fi
+          if [ -d "${MINGW_PREFIX}/share/icons/Adwaita" ]; then
+            mkdir -p "${DIST_DIR}/share/icons"
+            cp -r "${MINGW_PREFIX}/share/icons/Adwaita" "${DIST_DIR}/share/icons/"
+          fi
+
+          # Recursively discover and bundle all required runtime DLL dependencies
+          python3 -c "
+          import os, subprocess, shutil
+
+          prefix_bin = os.path.normpath(os.environ.get('MINGW_PREFIX', '/ucrt64')) + '/bin'
+          dist_dir = 'dist/LeLauncher-Windows-x64'
+          copied = set()
+
+          def get_dlls(filepath):
+              try:
+                  out = subprocess.check_output(['objdump', '-p', filepath], text=True, errors='ignore')
+                  return [line.split('DLL Name:')[1].strip() for line in out.splitlines() if 'DLL Name:' in line]
+              except Exception:
+                  return []
+
+          queue = [os.path.join(dist_dir, 'LeLauncher.exe')]
+          while queue:
+              curr = queue.pop(0)
+              for dll in get_dlls(curr):
+                  dll_lower = dll.lower()
+                  if dll_lower not in copied:
+                      src_dll = os.path.join(prefix_bin, dll)
+                      if os.path.exists(src_dll):
+                          dst_dll = os.path.join(dist_dir, dll)
+                          shutil.copy2(src_dll, dst_dll)
+                          copied.add(dll_lower)
+                          queue.append(dst_dll)
+          print(f'Successfully bundled {len(copied)} runtime DLLs into {dist_dir}')
+          "
+
+          # Create standalone zip archive
+          cd dist
+          zip -r ../LeLauncher-Windows-x64.zip LeLauncher-Windows-x64
+          cd ..
+
+      - name: Upload Windows Distribution Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LeLauncher-Windows-x64
+          path: LeLauncher-Windows-x64.zip
+          retention-days: 14
+          if-no-files-found: error
+
+  # ============================================================================
+  # 3. Release Publishing Job (Automatic when a version tag like v1.0.0 is pushed)
+  # ============================================================================
+  release:
+    name: Publish Release (Tags Only)
+    needs: [build-linux, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LeLauncher-Linux-x86_64
+          path: release-assets/
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LeLauncher-Windows-x64
+          path: release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/LeLauncher-Linux-*.tar.gz
+            release-assets/LeLauncher-Windows-x64.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
