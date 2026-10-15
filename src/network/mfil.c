@@ -731,14 +731,13 @@ bool __mfil_build_url__(const char *base_location, const char *subpath, const ch
     return true;
 }
 
-bool __mfil_verify_file_checksum__(const char *filepath, const char *expected_md5) {
+bool __mfil_calculate_file_checksum__(const char *filepath, char out_md5[33]) {
     TRACE_SCOPE();
-    if (!filepath || !expected_md5 || !*expected_md5) {
+    if (!filepath || !out_md5) {
         return false;
     }
 
     FILE *f                         = fopen(filepath, "rb");
-
     if (!f) {
         return false;
     }
@@ -759,11 +758,23 @@ bool __mfil_verify_file_checksum__(const char *filepath, const char *expected_md
     uint8_t digest[16];
     __md5_final__(digest, &ctx);
 
-    char actual_hex[33];
     for (int i = 0; i < 16; i++) {
-        snprintf(actual_hex + i * 2, 3, "%02x", digest[i]);
+        snprintf(out_md5 + i * 2, 3, "%02x", digest[i]);
     }
-    actual_hex[32]                  = '\0';
+    out_md5[32]                     = '\0';
+    return true;
+}
+
+bool __mfil_verify_file_checksum__(const char *filepath, const char *expected_md5) {
+    TRACE_SCOPE();
+    if (!filepath || !expected_md5 || !*expected_md5) {
+        return false;
+    }
+
+    char actual_hex[33];
+    if (!__mfil_calculate_file_checksum__(filepath, actual_hex)) {
+        return false;
+    }
 
     return (mfil_strcasecmp(actual_hex, expected_md5) == 0);
 }

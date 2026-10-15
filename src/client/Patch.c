@@ -83,11 +83,46 @@ bool __apply_patches__(const char *path) {
     return written;
 }
 
-bool __patch_main_thread__(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
-    const char *target = __find_game_client_executable__();
-    if (!__apply_patches__(target)) {
+#include <network/mfil.h>
+
+bool __is_client_patched__(const char *path) {
+    if (!path) path = __find_game_client_executable__();
+    if (!__is_regular_file__(path)) return false;
+
+    char current_md5[33] = {0};
+    if (!__mfil_calculate_file_checksum__(path, current_md5)) {
+        LOG_WARN("PATCH", "Failed to compute checksum for %s", path);
+        return false;
+    }
+
+    LOG_INFO("PATCH", "%s current checksum: %s (Expected modified: %s)", path, current_md5, EXPECTED_MODIFIED_WOW_MD5);
+
+    /* If checksum matches the expected modified checksum, client is already patched! */
+    if (_stricmp(current_md5, EXPECTED_MODIFIED_WOW_MD5) == 0) {
+        LOG_INFO("PATCH", "%s matches expected modified checksum. Already patched!", path);
+        return true;
+    }
+
+    LOG_INFO("PATCH", "%s does not match modified checksum. Unmodified executable detected, patching required.", path);
+    return false;
+}
+
+bool __check_and_patch_client__(const char *path) {
+    if (!path) path = __find_game_client_executable__();
+    if (!__is_regular_file__(path)) {
+        LOG_WARN("PATCH", "Game client not found at '%s'", path ? path : "null");
+        return false;
+    }
+
+    /* Check file checksum: if it matches, it's already modified */
+    if (__is_client_patched__(path)) {
+        LOG_INFO("PATCH", "Game client %s is verified and up-to-date. Skipping patch step.", path);
+        return true;
+    }
+
+    /* Not matched -> unmodified WoW.exe -> needs patching */
+    LOG_INFO("PATCH", "Applying patches (LAA + DLL injection hook) to %s...", path);
+    if (!__apply_patches__(path)) {
         DWORD last_error = GetLastError();
         char* system_message = NULL;
         FormatMessageA(
@@ -95,14 +130,28 @@ bool __patch_main_thread__(int argc, char* argv[]) {
             NULL, last_error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
             (LPSTR)&system_message, 0, NULL);
         LOG_ERROR("PATCH", "Failed to apply binary patches to %s: %s (code: %lu)",
-                  target, system_message ? system_message : "Unknown error", (unsigned long)last_error);
+                  path, system_message ? system_message : "Unknown error", (unsigned long)last_error);
         if (system_message) {
             LocalFree(system_message);
         }
         return false;
     }
-    LOG_INFO("PATCH", "Binary patch successfully applied to %s (LAA + DLL loader hook)", target);
+
+    /* Calculate and report new checksum after patching */
+    char new_md5[33] = {0};
+    if (__mfil_calculate_file_checksum__(path, new_md5)) {
+        LOG_INFO("PATCH", "Successfully patched %s! New modified checksum: %s", path, new_md5);
+    } else {
+        LOG_INFO("PATCH", "Successfully patched %s!", path);
+    }
     return true;
+}
+
+bool __patch_main_thread__(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    const char *target = __find_game_client_executable__();
+    return __check_and_patch_client__(target);
 }
 #endif
 

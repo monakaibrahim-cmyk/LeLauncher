@@ -33,6 +33,7 @@
 
 typedef struct {
     GtkBuilder          *builder;
+    GtkWindow           *main_window;
     GtkEntry            *username_entry;
     GtkPasswordEntry    *password_entry;
     GtkEntry            *realmlist_entry;
@@ -275,28 +276,95 @@ static void __verify_account_handler__(GtkButton *btn, gpointer user_data) {
 }
 
 /* ==============================================================================
- * Game Client Launch Execution
+ * Game Client Launch & Process Lifecycle Monitoring
  * ============================================================================== */
-static void __play_game_handler__(GtkButton *btn, gpointer user_data) {
-    (void)btn;
-    (void)user_data;
-    LOG_INFO("SYS", "Starting game client executable...");
+static gboolean __on_game_exited_idle_cb__(gpointer user_data) {
+    AppWindowContext *ctx = (AppWindowContext *)user_data;
+    if (!ctx) return G_SOURCE_REMOVE;
+
+    LOG_INFO("SYS", "Game process ended. Restoring launcher interface...");
+    if (ctx->main_window) {
+        gtk_widget_set_visible(GTK_WIDGET(ctx->main_window), TRUE);
+        gtk_window_present(ctx->main_window);
+    }
+    if (ctx->play_btn) {
+        gtk_widget_set_sensitive(GTK_WIDGET(ctx->play_btn), TRUE);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer __game_monitor_thread__(gpointer user_data) {
+    AppWindowContext *ctx = (AppWindowContext *)user_data;
+    if (!ctx) return NULL;
 
 #if defined(_WIN32)
     const char *target = __find_game_client_executable__();
     if (__is_regular_file__(target)) {
-        LOG_INFO("PATCH", "Verifying and applying client patches (LAA + launcher hook) to %s...", target);
-        __apply_patches__(target);
+        __check_and_patch_client__(target);
     }
-    HINSTANCE res = ShellExecuteA(NULL, "open", target, NULL, NULL, SW_SHOWNORMAL);
-    if ((INT_PTR)res <= 32) {
-        ShellExecuteA(NULL, "open", "WoW.exe", NULL, NULL, SW_SHOWNORMAL);
+
+    SHELLEXECUTEINFOA sei = { 0 };
+    sei.cbSize = sizeof(SHELLEXECUTEINFOA);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = "open";
+    sei.lpFile = target;
+    sei.nShow = SW_SHOWNORMAL;
+
+    LOG_INFO("SYS", "Launching game client: %s...", target);
+    if (ShellExecuteExA(&sei) && sei.hProcess) {
+        LOG_INFO("SYS", "Game process active. Launcher minimized to background.");
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        CloseHandle(sei.hProcess);
+        LOG_INFO("SYS", "Game client process finished.");
+    } else {
+        /* Fallback with CreateProcessA */
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
+        char cmdline[MAX_PATH];
+        snprintf(cmdline, sizeof(cmdline), "\"%s\"", target);
+        if (CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            LOG_INFO("SYS", "Game process started via CreateProcess. Launcher in background.");
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            CloseHandle(pi.hProcess);
+            LOG_INFO("SYS", "Game client process finished.");
+        } else {
+            LOG_ERROR("SYS", "Could not start game executable: %s (Error code: %lu)", target, (unsigned long)GetLastError());
+        }
     }
 #else
-    if (system("./WoW.exe &") != 0 && system("wine WoW.exe &") != 0) {
-        LOG_INFO("SYS", "Game binary triggered.");
+    LOG_INFO("SYS", "Launching game client (Wine/Linux)...");
+    if (system("wine WoW.exe 2>/dev/null") != 0) {
+        if (system("./WoW.exe 2>/dev/null") != 0) {
+            LOG_WARN("SYS", "Neither wine WoW.exe nor ./WoW.exe could be launched.");
+        }
     }
+    LOG_INFO("SYS", "Game client process finished.");
 #endif
+
+    /* Reappear launcher window in GTK UI thread */
+    g_idle_add(__on_game_exited_idle_cb__, ctx);
+    return NULL;
+}
+
+static void __play_game_handler__(GtkButton *btn, gpointer user_data) {
+    AppWindowContext *ctx = (AppWindowContext *)user_data;
+    if (!ctx) return;
+
+    if (btn) {
+        gtk_widget_set_sensitive(GTK_WIDGET(btn), FALSE);
+    }
+
+    LOG_INFO("SYS", "Game launched. Hiding launcher window while playing...");
+
+    /* Hide the launcher window while game is running */
+    if (ctx->main_window) {
+        gtk_widget_set_visible(GTK_WIDGET(ctx->main_window), FALSE);
+    }
+
+    /* Spawn monitor thread to wait for game exit */
+    GThread *th = g_thread_new("game_monitor", __game_monitor_thread__, ctx);
+    g_thread_unref(th);
 }
 
 /* ==============================================================================
@@ -504,6 +572,13 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
     done_pd->finished = TRUE;
     g_idle_add(__patch_progress_idle_cb__, done_pd);
 
+#if defined(_WIN32)
+    const char *client_exe = __find_game_client_executable__();
+    if (__is_regular_file__(client_exe)) {
+        __check_and_patch_client__(client_exe);
+    }
+#endif
+
     __mfil_free_manifest__(&manifest);
     if (has_master) __mfil_free_master__(&master);
 
@@ -553,7 +628,8 @@ static void __app_activate__(GtkApplication *app, gpointer user_data) {
         g_critical("Failed to locate 'app_window' object from UI builder!");
         return;
     }
-    gtk_window_set_application(GTK_WINDOW(window), app);
+    ctx->main_window = GTK_WINDOW(window);
+    gtk_window_set_application(ctx->main_window, app);
 
     /* Bind widgets */
     ctx->username_entry       = GTK_ENTRY(gtk_builder_get_object(ctx->builder, "username_entry"));

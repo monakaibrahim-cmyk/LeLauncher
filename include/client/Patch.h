@@ -56,10 +56,22 @@ static const struct PatchDetails __patches__[3] = {
     }
 };
 
+/*
+ * Expected MD5 checksum of the modified (patched) WoW.exe.
+ * If the client checksum does NOT match this value, it is treated as an
+ * unmodified client and needs patching.
+ * Replace with the exact checksum once available.
+ */
+#ifndef EXPECTED_MODIFIED_WOW_MD5
+#define EXPECTED_MODIFIED_WOW_MD5 "00000000000000000000000000000000"
+#endif
+
 bool __is_regular_file__(const char* path);
 const char *__get__file_name__(const char *path);
 void __build_sibling_file_path__(const char *base_path, const char *sibling_name, char *buffer, size_t size);
 const char *__find_game_client_executable__(void);
+bool __is_client_patched__(const char *path);
+bool __check_and_patch_client__(const char *path);
 bool __apply_patches__(const char *path);
 bool __patch_main_thread__(int argc, char* argv[]);
 

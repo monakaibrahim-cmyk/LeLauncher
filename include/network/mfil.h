@@ -81,6 +81,9 @@ CURLStatus __mfil_download_file__(const char *base_location, const MfilManifest 
 /* Download a partial manifest using the downloader engine */
 CURLStatus __mfil_download_partial__(const char *base_location, const char *partial_filename, const char *destination_path, const CURLOptions *options, CURLResult *result);
 
+/* Calculate MD5 checksum of a file, writing 32-hex chars + null terminator into out_md5 */
+bool __mfil_calculate_file_checksum__(const char *filepath, char out_md5[33]);
+
 /* Verify MD5 checksum of a downloaded file */
 bool __mfil_verify_file_checksum__(const char *filepath, const char *expected_md5);
 
