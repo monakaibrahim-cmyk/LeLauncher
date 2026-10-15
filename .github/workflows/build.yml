@@ -20,9 +20,6 @@ on:
           - Release
           - Debug
 
-# Suppress Node.js 20 deprecation warning on runners
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
 
 permissions:
   contents: write
@@ -59,83 +56,96 @@ jobs:
           if-no-files-found: error
 
   # ============================================================================
-  # 2. Windows Build Job (Runs on GitHub-Hosted Windows Runner with MSYS2 UCRT64)
+  # 2. Windows Build Job (MSVC 2022 on GitHub-Hosted Windows Runner)
   # ============================================================================
   build-windows:
-    name: Build Windows (UCRT64)
+    name: Build Windows (MSVC)
     runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup MSYS2 UCRT64 Environment
-        uses: msys2/setup-msys2@v2
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            zip
+          arch: x64
 
-      - name: Configure and Compile LeLauncher
-        shell: msys2 {0}
+      - name: Cache vcpkg Binary Artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-
+
+      - name: Install Dependencies via vcpkg
+        shell: pwsh
         run: |
-          BUILD_CFG="${{ inputs.build_type || 'Release' }}"
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="${BUILD_CFG}"
-          cmake --build build
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install --triplet x64-windows
+
+      - name: Configure LeLauncher with CMake (MSVC)
+        shell: pwsh
+        run: |
+          $BUILD_CFG = "${{ inputs.build_type || 'Release' }}"
+          cmake -B build `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=$BUILD_CFG
+
+      - name: Compile LeLauncher with MSVC
+        shell: pwsh
+        run: |
+          $BUILD_CFG = "${{ inputs.build_type || 'Release' }}"
+          cmake --build build --config $BUILD_CFG --parallel
 
       - name: Bundle Standalone Windows Distribution
-        shell: msys2 {0}
+        shell: pwsh
         run: |
-          DIST_DIR="dist/LeLauncher-Windows-x64"
-          rm -rf "${DIST_DIR}" LeLauncher-Windows-x64.zip
-          mkdir -p "${DIST_DIR}"
+          $BUILD_CFG = "${{ inputs.build_type || 'Release' }}"
+          $DIST_DIR = "dist/LeLauncher-Windows-x64"
+          if (Test-Path $DIST_DIR) { Remove-Item -Recurse -Force $DIST_DIR }
+          New-Item -ItemType Directory -Force -Path $DIST_DIR | Out-Null
 
-          # Copy primary executable and runtime game data
-          cp build/LeLauncher.exe "${DIST_DIR}/"
-          if [ -f "WoW.mfil" ]; then
-            cp WoW.mfil "${DIST_DIR}/"
-          fi
-          if [ -d "data" ]; then
-            cp -r data "${DIST_DIR}/"
-          fi
+          # Copy primary executable
+          if (Test-Path "build/$BUILD_CFG/LeLauncher.exe") {
+            Copy-Item "build/$BUILD_CFG/LeLauncher.exe" -Destination "$DIST_DIR/"
+          } elseif (Test-Path "build/LeLauncher.exe") {
+            Copy-Item "build/LeLauncher.exe" -Destination "$DIST_DIR/"
+          }
 
-          # Recursively discover and bundle all required runtime DLL dependencies
-          python3 -c "
-          import os, subprocess, shutil
+          # Copy runtime game data and manifests
+          if (Test-Path "WoW.mfil") {
+            Copy-Item "WoW.mfil" -Destination "$DIST_DIR/"
+          }
+          if (Test-Path "data") {
+            Copy-Item -Recurse "data" -Destination "$DIST_DIR/data"
+          }
 
-          prefix_bin = os.path.normpath(os.environ.get('MINGW_PREFIX', '/ucrt64')) + '/bin'
-          dist_dir = 'dist/LeLauncher-Windows-x64'
-          copied = set()
+          # Bundle all required runtime DLLs from build directory and vcpkg
+          Get-ChildItem -Path "build/$BUILD_CFG" -Filter "*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$DIST_DIR/"
+          Get-ChildItem -Path "build" -Filter "*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$DIST_DIR/"
+          Get-ChildItem -Path "vcpkg_installed/x64-windows/bin" -Filter "*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$DIST_DIR/"
+          Get-ChildItem -Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin" -Filter "*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$DIST_DIR/"
 
-          def get_dlls(filepath):
-              try:
-                  out = subprocess.check_output(['objdump', '-p', filepath], text=True, errors='ignore')
-                  return [line.split('DLL Name:')[1].strip() for line in out.splitlines() if 'DLL Name:' in line]
-              except Exception:
-                  return []
+          # Bundle GTK 4 schemas (required for GTK4 window initialization on Windows)
+          $SCHEMAS_SRC = ""
+          if (Test-Path "vcpkg_installed/x64-windows/share/glib-2.0/schemas") {
+            $SCHEMAS_SRC = "vcpkg_installed/x64-windows/share/glib-2.0/schemas"
+          } elseif (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/share/glib-2.0/schemas") {
+            $SCHEMAS_SRC = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/share/glib-2.0/schemas"
+          }
 
-          queue = [os.path.join(dist_dir, 'LeLauncher.exe')]
-          while queue:
-              curr = queue.pop(0)
-              for dll in get_dlls(curr):
-                  dll_lower = dll.lower()
-                  if dll_lower not in copied:
-                      src_dll = os.path.join(prefix_bin, dll)
-                      if os.path.exists(src_dll):
-                          dst_dll = os.path.join(dist_dir, dll)
-                          shutil.copy2(src_dll, dst_dll)
-                          copied.add(dll_lower)
-                          queue.append(dst_dll)
-          print(f'Successfully bundled {len(copied)} runtime DLLs into {dist_dir}')
-          "
+          if ($SCHEMAS_SRC -ne "") {
+            $SCHEMAS_DST = "$DIST_DIR/share/glib-2.0/schemas"
+            New-Item -ItemType Directory -Force -Path $SCHEMAS_DST | Out-Null
+            Copy-Item -Path "$SCHEMAS_SRC/*" -Destination "$SCHEMAS_DST/" -Force
+          }
 
-          # Create standalone zip archive
-          cd dist
-          zip -r ../LeLauncher-Windows-x64.zip LeLauncher-Windows-x64
-          cd ..
+          # Compress to portable zip distribution
+          Compress-Archive -Path "$DIST_DIR/*" -DestinationPath "LeLauncher-Windows-x64.zip" -Force
 
       - name: Upload Windows Distribution Artifact
         uses: actions/upload-artifact@v4

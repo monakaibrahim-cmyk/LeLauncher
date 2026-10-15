@@ -1,12 +1,35 @@
 cmake_minimum_required(VERSION 3.23)
 project(LeLauncher LANGUAGES C)
 
-set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 message(STATUS "==================================================================")
-message(STATUS " Configuring LeLauncher (WotLK Edition - Native Raylib/Raygui)    ")
+message(STATUS " Configuring LeLauncher (Wrath of the Lich King - GTK 4 Edition)  ")
 message(STATUS "==================================================================")
+
+# ==============================================================================
+# Compiler & Toolchain Setup
+# ==============================================================================
+if (MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
+# ==============================================================================
+# GTK 4 and GLib Tooling Discovery
+# ==============================================================================
+find_package(GTK4 CONFIG QUIET)
+if (TARGET GTK4::GTK4)
+    message(STATUS "Found GTK4 via CMake Config: GTK4::GTK4")
+    set(GTK4_TARGET GTK4::GTK4)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+    set(GTK4_TARGET PkgConfig::GTK4)
+endif()
+
+find_program(GLIB_COMPILE_RESOURCES NAMES glib-compile-resources)
+find_program(BLUEPRINT_COMPILER NAMES blueprint-compiler)
 
 # ==============================================================================
 # Include Directories
@@ -18,6 +41,9 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui
     ${CMAKE_CURRENT_BINARY_DIR}
 )
+if (DEFINED GTK4_INCLUDE_DIRS)
+    include_directories(${GTK4_INCLUDE_DIRS})
+endif()
 
 include(FetchContent)
 
@@ -52,41 +78,7 @@ message(STATUS "Fetching and configuring self-contained static libcurl...")
 FetchContent_MakeAvailable(curl)
 
 # ==============================================================================
-# Self-Contained Raylib (5.5) & Raygui (4.0)
-# ==============================================================================
-message(STATUS "Fetching self-contained static raylib (v5.5)...")
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
-set(CUSTOMIZE_BUILD OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    raylib
-    GIT_REPOSITORY https://github.com/raysan5/raylib.git
-    GIT_TAG 5.5
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(raylib)
-
-# Suppress compiler warnings from external raylib codebase (e.g. jar_mod.h stringop-overflow)
-if (TARGET raylib)
-    if (MSVC)
-        target_compile_options(raylib PRIVATE /W0)
-    else()
-        target_compile_options(raylib PRIVATE -w)
-    endif()
-endif()
-
-message(STATUS "Fetching self-contained raygui (v4.0)...")
-FetchContent_Declare(
-    raygui
-    GIT_REPOSITORY https://github.com/raysan5/raygui.git
-    GIT_TAG 4.0
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(raygui)
-
-# ==============================================================================
-# Core Library (Data structures & Dat Container & Async Logger)
+# Core Library (Data structures, Dat Container & Async Logger)
 # ==============================================================================
 add_library(lelauncher_core STATIC
     src/core/dat.c
@@ -96,7 +88,8 @@ target_include_directories(lelauncher_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core
 )
-target_compile_definitions(lelauncher_core PUBLIC HAVE_CURL=1)
+target_compile_definitions(lelauncher_core PUBLIC HAVE_CURL=1 USE_GTK4=1)
+
 if (UNIX AND NOT APPLE)
     target_link_libraries(lelauncher_core PUBLIC pthread)
 endif()
@@ -114,7 +107,11 @@ add_library(lelauncher_network STATIC
 )
 
 target_link_libraries(lelauncher_network PUBLIC libcurl_static m)
-target_compile_definitions(lelauncher_network PUBLIC CURL_STATICLIB=1)
+target_compile_definitions(lelauncher_network PUBLIC CURL_STATICLIB=1 USE_GTK4=1)
+target_include_directories(lelauncher_network PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/network
+)
 
 if (UNIX AND NOT APPLE)
     target_link_libraries(lelauncher_network PUBLIC pthread)
@@ -131,12 +128,48 @@ if (WIN32)
 endif()
 
 # ==============================================================================
-# Executable Target
+# GResource & Blueprint UI Generation
 # ==============================================================================
+if (BLUEPRINT_COMPILER)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/window.ui
+        COMMAND ${BLUEPRINT_COMPILER} compile
+                --output ${CMAKE_CURRENT_BINARY_DIR}/window.ui
+                ${CMAKE_CURRENT_SOURCE_DIR}/data/ui/window.blp
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/ui/window.blp
+        COMMENT "Compiling Blueprint UI: window.blp -> window.ui"
+    )
+else()
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/window.ui
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/data/ui/window.ui
+                ${CMAKE_CURRENT_BINARY_DIR}/window.ui
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/ui/window.ui
+        COMMENT "Using precompiled UI: window.ui"
+    )
+endif()
+
 set(APP_SOURCES
     src/main.c
-    src/ui/raygui_window.c
+    src/ui/app_window.c
 )
+
+if (GLIB_COMPILE_RESOURCES)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/resources.c
+        COMMAND ${GLIB_COMPILE_RESOURCES}
+                --sourcedir=${CMAKE_CURRENT_BINARY_DIR}
+                --sourcedir=${CMAKE_CURRENT_SOURCE_DIR}/data/ui
+                --target=${CMAKE_CURRENT_BINARY_DIR}/resources.c
+                --generate-source
+                ${CMAKE_CURRENT_SOURCE_DIR}/data/ui/resources.gresource.xml
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/window.ui
+                ${CMAKE_CURRENT_SOURCE_DIR}/data/ui/resources.gresource.xml
+        COMMENT "Compiling GResource: resources.c"
+    )
+    list(APPEND APP_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/resources.c)
+endif()
 
 if (WIN32)
     enable_language(RC)
@@ -145,16 +178,17 @@ endif()
 
 add_executable(${CMAKE_PROJECT_NAME} ${APP_SOURCES})
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    ${raylib_SOURCE_DIR}/src
-    ${raygui_SOURCE_DIR}/src
-)
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE USE_GTK4=1)
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     lelauncher_core
     lelauncher_network
-    raylib
+    ${GTK4_TARGET}
 )
+
+if (WIN32)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE shell32)
+endif()
 
 if (UNIX AND NOT APPLE)
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE m pthread dl)

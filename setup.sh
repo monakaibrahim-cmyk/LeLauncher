@@ -77,9 +77,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo -e "${CYAN}${BOLD}=== LeLauncher Automated Setup & Build (WotLK Edition) ===${NC}"
+echo -e "${CYAN}${BOLD}=== LeLauncher Automated Setup & Build (GTK 4 Edition) ===${NC}"
 echo -e "Target Configuration: ${YELLOW}${BUILD_TYPE}${NC}"
-echo -e "UI Engine:            ${CYAN}Pure Raylib + Raygui (100% Self-Contained)${NC}"
+echo -e "UI Engine:            ${CYAN}GTK 4 (Native Desktop GUI)${NC}"
 
 # Check for root/sudo elevation helper
 SUDO=""
@@ -96,12 +96,15 @@ elif command -v sudo >/dev/null 2>&1; then
     fi
 fi
 
-# Detect missing critical tools (Zero GUI packages required)
+# Detect missing critical tools and GTK 4 libraries
 __get_missing_dependencies__() {
     local missing=()
     if ! command -v cmake >/dev/null 2>&1; then missing+=("cmake"); fi
     if ! command -v git >/dev/null 2>&1; then missing+=("git"); fi
-    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then missing+=("build-essential (gcc/clang)"); fi
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then missing+=("build-essential"); fi
+    if ! command -v pkg-config >/dev/null 2>&1; then missing+=("pkg-config"); fi
+    if ! command -v glib-compile-resources >/dev/null 2>&1; then missing+=("glib-compile-resources (libglib2.0-dev-bin)"); fi
+    if ! pkg-config --exists gtk4 2>/dev/null; then missing+=("gtk4 (libgtk-4-dev)"); fi
     echo "${missing[*]}"
 }
 
@@ -111,7 +114,7 @@ __needs_dependencies__() {
     [[ -n "$missing" ]]
 }
 
-# Detect distribution and install essential build tools if missing
+# Detect distribution and install GTK 4 and build tools if missing
 __install_dependencies__() {
     echo -e "${CYAN}Detecting system package manager...${NC}"
 
@@ -131,20 +134,20 @@ __install_dependencies__() {
         missing_pkgs=$(__get_missing_dependencies__)
         echo ""
         echo -e "${RED}${BOLD}===============================================================================${NC}"
-        echo -e "${RED}${BOLD}  Error: Missing required basic tools:${NC} ${YELLOW}${missing_pkgs}${NC}"
+        echo -e "${RED}${BOLD}  Error: Missing required GTK 4 dependencies:${NC} ${YELLOW}${missing_pkgs}${NC}"
         echo -e "${RED}${BOLD}  'sudo' requires an interactive password, which cannot be prompted in CI.${NC}"
         echo -e "${RED}${BOLD}===============================================================================${NC}"
         echo ""
         echo -e "${CYAN}To fix this, please run this one-time command on your VPS terminal:${NC}"
         echo ""
         if [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop) ]] || [[ "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
-            echo -e "  ${BOLD}sudo apt-get update && sudo apt-get install -y build-essential cmake git${NC}"
+            echo -e "  ${BOLD}sudo apt-get update && sudo apt-get install -y build-essential cmake git pkg-config libgtk-4-dev libglib2.0-dev-bin${NC}"
         elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma) ]] || [[ "$DISTRO_LIKE" =~ (fedora|rhel) ]]; then
-            echo -e "  ${BOLD}sudo dnf install -y gcc gcc-c++ make cmake git${NC}"
+            echo -e "  ${BOLD}sudo dnf install -y gcc gcc-c++ make cmake git pkgconf-pkg-config gtk4-devel glib2-devel${NC}"
         elif [[ "$DISTRO_ID" =~ (arch|manjaro|endeavouros) ]] || [[ "$DISTRO_LIKE" =~ arch ]]; then
-            echo -e "  ${BOLD}sudo pacman -S --needed --noconfirm base-devel cmake git${NC}"
+            echo -e "  ${BOLD}sudo pacman -S --needed --noconfirm base-devel cmake git pkgconf gtk4 glib2-devel${NC}"
         else
-            echo -e "  Install cmake, git, and a C compiler using your distribution package manager."
+            echo -e "  Install cmake, git, pkg-config, GTK 4 headers, and glib-compile-resources using your package manager."
         fi
         RUNNER_USER=$(whoami 2>/dev/null || echo "$USER")
         echo ""
@@ -155,27 +158,27 @@ __install_dependencies__() {
     fi
 
     if [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop) ]] || [[ "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
-        echo -e "${CYAN}Installing build essentials via apt...${NC}"
+        echo -e "${CYAN}Installing GTK 4 and build essentials via apt...${NC}"
         $SUDO apt-get update -y
-        $SUDO apt-get install -y build-essential cmake git
+        $SUDO apt-get install -y build-essential cmake git pkg-config libgtk-4-dev libglib2.0-dev-bin
     elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma) ]] || [[ "$DISTRO_LIKE" =~ (fedora|rhel) ]]; then
-        echo -e "${CYAN}Installing build essentials via dnf...${NC}"
-        $SUDO dnf install -y gcc gcc-c++ make cmake git
+        echo -e "${CYAN}Installing GTK 4 and build essentials via dnf...${NC}"
+        $SUDO dnf install -y gcc gcc-c++ make cmake git pkgconf-pkg-config gtk4-devel glib2-devel
     elif [[ "$DISTRO_ID" =~ (arch|manjaro|endeavouros) ]] || [[ "$DISTRO_LIKE" =~ arch ]]; then
-        echo -e "${CYAN}Installing build essentials via pacman...${NC}"
-        $SUDO pacman -S --needed --noconfirm base-devel cmake git
+        echo -e "${CYAN}Installing GTK 4 and build essentials via pacman...${NC}"
+        $SUDO pacman -S --needed --noconfirm base-devel cmake git pkgconf gtk4 glib2-devel
     elif [[ "$DISTRO_ID" =~ (opensuse|sles) ]] || [[ "$DISTRO_LIKE" =~ suse ]]; then
-        echo -e "${CYAN}Installing build essentials via zypper...${NC}"
-        $SUDO zypper install -y gcc gcc-c++ make cmake git
+        echo -e "${CYAN}Installing GTK 4 and build essentials via zypper...${NC}"
+        $SUDO zypper install -y gcc gcc-c++ make cmake git pkg-config gtk4-devel glib2-devel
     elif [[ "$DISTRO_ID" == "alpine" ]]; then
-        echo -e "${CYAN}Installing build essentials via apk...${NC}"
-        $SUDO apk add build-base cmake git
+        echo -e "${CYAN}Installing GTK 4 and build essentials via apk...${NC}"
+        $SUDO apk add build-base cmake git pkgconf gtk4.0-dev glib-dev
     elif [[ "${OSTYPE:-}" == "msys" ]] || [[ "${MSYSTEM:-}" =~ UCRT64|MINGW64 ]]; then
-        echo -e "${CYAN}Installing toolchain via MSYS2 pacman...${NC}"
-        pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+        echo -e "${CYAN}Installing GTK 4 and toolchain via MSYS2 pacman...${NC}"
+        pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gtk4
     fi
 
-    echo -e "${GREEN}✓ Basic toolchain verified and installed.${NC}"
+    echo -e "${GREEN}✓ GTK 4 and build tools verified and installed.${NC}"
 }
 
 # Check and install tools if needed

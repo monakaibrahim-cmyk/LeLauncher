@@ -1,0 +1,252 @@
+using Gtk 4.0;
+
+ApplicationWindow app_window {
+  title: "Wrath of the Lich King - LeLauncher 3.3.5a";
+  default-width: 820;
+  default-height: 640;
+
+  [titlebar]
+  HeaderBar {
+    [title]
+    Label {
+      label: "Wrath of the Lich King - 3.3.5a";
+      styles ["title"]
+    }
+
+    [end]
+    Button refresh_btn {
+      icon-name: "view-refresh-symbolic";
+      tooltip-text: "Refresh Realm Status and Session";
+    }
+  }
+
+  Box {
+    orientation: vertical;
+    spacing: 14;
+    margin-top: 16;
+    margin-bottom: 16;
+    margin-start: 20;
+    margin-end: 20;
+
+    /* 1. Realm Status & Telemetry Card */
+    Box {
+      orientation: horizontal;
+      spacing: 16;
+      styles ["card"]
+
+      Box {
+        orientation: vertical;
+        spacing: 4;
+        hexpand: true;
+
+        Label realm_name_label {
+          label: "Realm: Northrend (● Online)";
+          halign: start;
+          styles ["title-3"]
+        }
+
+        Label motd_label {
+          label: "Double XP & Honor active! The Frozen Throne awaits.";
+          halign: start;
+          styles ["dim-label"]
+        }
+      }
+
+      Box {
+        orientation: horizontal;
+        spacing: 16;
+        valign: center;
+
+        Label online_players_label {
+          label: "Online: 1,420";
+          styles ["accent"]
+        }
+
+        Label ingame_players_label {
+          label: "In-Game: 1,180";
+          styles ["success"]
+        }
+
+        Label ping_label {
+          label: "Ping: 22 ms";
+          styles ["dim-label"]
+        }
+      }
+    }
+
+    /* 2. Champion Vault (Authentication & Account) */
+    Box {
+      orientation: vertical;
+      spacing: 12;
+      styles ["card"]
+
+      Box {
+        orientation: horizontal;
+        spacing: 8;
+
+        Label {
+          label: "Champion Vault & Credentials";
+          halign: start;
+          styles ["heading"]
+          hexpand: true;
+        }
+
+        Label client_info_label {
+          label: "HWID Guard Active";
+          halign: end;
+          styles ["dim-label"]
+        }
+      }
+
+      Box {
+        orientation: horizontal;
+        spacing: 12;
+
+        Entry username_entry {
+          placeholder-text: "Account Name...";
+          hexpand: true;
+        }
+
+        PasswordEntry password_entry {
+          placeholder-text: "Password...";
+          show-peek-icon: true;
+          hexpand: true;
+        }
+
+        Button verify_btn {
+          label: "Sign In & Remember";
+          styles ["suggested-action", "pill"]
+        }
+
+        Button clear_cache_btn {
+          label: "Clear Cache";
+          tooltip-text: "Clear WDB & Item Cache";
+        }
+      }
+
+      Box {
+        orientation: horizontal;
+        spacing: 12;
+
+        Label {
+          label: "Realmlist Gateway:";
+          valign: center;
+          styles ["caption"]
+        }
+
+        Entry realmlist_entry {
+          placeholder-text: "logon.northrend.org";
+          text: "logon.northrend.org";
+          hexpand: true;
+        }
+
+        Button realmlist_btn {
+          label: "Set Realmlist";
+          tooltip-text: "Write realm host to realmlist.wtf";
+        }
+
+        Label auth_status_label {
+          label: "Ready for sign-in";
+          halign: start;
+          styles ["dim-label"]
+          hexpand: true;
+        }
+      }
+    }
+
+    /* 3. Game Client Content & Patcher (.mfil) */
+    Box {
+      orientation: vertical;
+      spacing: 12;
+      styles ["card"]
+
+      Box {
+        orientation: horizontal;
+        spacing: 12;
+
+        Box {
+          orientation: vertical;
+          spacing: 2;
+          hexpand: true;
+
+          Label patch_title_label {
+            label: "Northrend Client & Archive Verifier (.mfil)";
+            halign: start;
+            styles ["heading"]
+          }
+
+          Label patch_status_label {
+            label: "Ready to verify game files";
+            halign: start;
+            styles ["caption"]
+          }
+        }
+
+        Button update_btn {
+          label: "Check Files";
+          styles ["suggested-action", "pill"]
+        }
+
+        Button play_btn {
+          label: "Play Game";
+          sensitive: true;
+          styles ["success", "pill"]
+        }
+      }
+
+      ProgressBar download_progress {
+        fraction: 1.0;
+        show-text: true;
+        text: "Ready to Play";
+      }
+
+      Box {
+        orientation: horizontal;
+        spacing: 16;
+
+        Label download_speed_label {
+          label: "-- KB/s";
+          halign: start;
+          styles ["dim-label"]
+        }
+
+        Label download_eta_label {
+          label: "ETA: --:--";
+          halign: start;
+          styles ["dim-label"]
+        }
+
+        Label download_file_label {
+          label: "";
+          halign: end;
+          hexpand: true;
+          styles ["dim-label"]
+        }
+      }
+    }
+
+    /* 4. Activity Logs Console */
+    Label {
+      label: "Activity & Live Log Console";
+      halign: start;
+      styles ["heading"]
+    }
+
+    ScrolledWindow {
+      vexpand: true;
+      hexpand: true;
+      min-content-height: 160;
+      styles ["card"]
+
+      TextView log_view {
+        editable: false;
+        cursor-visible: false;
+        monospace: true;
+        left-margin: 12;
+        right-margin: 12;
+        top-margin: 12;
+        bottom-margin: 12;
+      }
+    }
+  }
+}

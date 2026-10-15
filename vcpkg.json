@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "lelauncher",
+  "version-string": "1.0.0",
+  "description": "LeLauncher - Wrath of the Lich King Game Launcher (GTK 4 Edition)",
+  "dependencies": [
+    "gtk"
+  ]
+}

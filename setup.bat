@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ===============================================================================
-echo  LeLauncher Automated Setup ^& Build for Windows (WotLK Edition)
+echo  LeLauncher Automated Setup ^& Build for Windows (GTK 4 Edition)
 echo ===============================================================================
 
 set "BUILD_TYPE=Release"
@@ -17,7 +17,7 @@ for %%A in (%*) do (
 )
 
 echo [INFO] Build Configuration: %BUILD_TYPE%
-echo [INFO] UI Engine:          Pure Raylib + Raygui (100% Self-Contained)
+echo [INFO] UI Engine:          GTK 4 (Embedded Binary UI)
 
 if "%DO_CLEAN%"=="1" (
     if exist "build" (
@@ -26,19 +26,42 @@ if "%DO_CLEAN%"=="1" (
     )
 )
 
-REM If cmake is available in PATH, build directly
+REM 1. Check for active MSVC in PATH
+where cl >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+    echo [INFO] Detected active MSVC toolchain in PATH.
+    goto :DO_MSVC_BUILD
+)
+
+REM 2. Discover Visual Studio installation via vswhere
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        set "VS_DIR=%%i"
+    )
+    if defined VS_DIR (
+        if exist "!VS_DIR!\VC\Auxiliary\Build\vcvars64.bat" (
+            echo [INFO] Detected Visual Studio at !VS_DIR!
+            echo [INFO] Initializing MSVC x64 developer environment...
+            call "!VS_DIR!\VC\Auxiliary\Build\vcvars64.bat"
+            goto :DO_MSVC_BUILD
+        )
+    )
+)
+
+REM 3. If cmake is available in PATH, build directly
 where cmake >nul 2>nul
 if %ERRORLEVEL% EQU 0 goto :DO_BUILD
 
-REM Check for standard MSYS2 installations
+REM 4. Check for standard MSYS2 installations as fallback
 set "MSYS2_ROOT="
 if exist "C:\msys64\ucrt64.exe" set "MSYS2_ROOT=C:\msys64"
 if not defined MSYS2_ROOT if exist "C:\msys2\ucrt64.exe" set "MSYS2_ROOT=C:\msys2"
 
 if defined MSYS2_ROOT (
     echo [INFO] Detected MSYS2 at %MSYS2_ROOT%
-    echo [INFO] Ensuring toolchain and build dependencies are installed...
-    "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja"
+    echo [INFO] Ensuring toolchain and GTK 4 dependencies are installed...
+    "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gtk4"
     
     echo [INFO] Configuring and building via MSYS2 UCRT64 environment...
     set "MSYSTEM=UCRT64"
@@ -58,27 +81,32 @@ echo.
 echo ===============================================================================
 echo  Build Tools Not Found on this PC!
 echo ===============================================================================
-echo  To build LeLauncher on Windows:
-echo  1. Install MSYS2 from https://www.msys2.org/
-echo  2. Open 'MSYS2 UCRT64' terminal and run:
-echo       pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
-echo  3. Re-run: setup.bat
-echo ===============================================================================
-echo.
+echo Please install Visual Studio 2022 (with Desktop Development with C++) or MSYS2.
 exit /b 1
 
-:DO_BUILD
-echo [INFO] Configuring build with CMake (%BUILD_TYPE%)...
-cmake -B build -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] CMake configuration failed.
+:DO_MSVC_BUILD
+echo [INFO] Configuring with MSVC and CMake...
+if exist "vcpkg\scripts\buildsystems\vcpkg.cmake" (
+    cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="vcpkg\scripts\buildsystems\vcpkg.cmake"
+) else (
+    cmake -B build -G "Visual Studio 17 2022" -A x64
+)
+cmake --build build --config %BUILD_TYPE%
+if %ERRORLEVEL% EQU 0 (
+    echo [SUCCESS] Build complete with MSVC!
+    if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
+    exit /b 0
+) else (
+    echo [ERROR] MSVC build failed.
     exit /b 1
 )
 
-echo [INFO] Compiling LeLauncher...
+:DO_BUILD
+echo [INFO] Configuring build with CMake...
+cmake -B build -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 cmake --build build --config %BUILD_TYPE%
 if %ERRORLEVEL% EQU 0 (
-    echo [SUCCESS] Build complete! Executable located in build\
+    echo [SUCCESS] Build complete!
     if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
     exit /b 0
 ) else (
@@ -87,16 +115,30 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 :PACKAGE_BUNDLE
-echo [INFO] Packaging Windows distribution bundle...
+echo [INFO] Packaging distribution bundle...
 set "DIST_DIR=dist\LeLauncher-Windows-x64"
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
-if exist "dist\LeLauncher-Windows-x64.zip" del /f /q "dist\LeLauncher-Windows-x64.zip"
-if not exist "dist" mkdir "dist"
 mkdir "%DIST_DIR%"
-if exist "build\LeLauncher.exe" copy "build\LeLauncher.exe" "%DIST_DIR%\" >nul
-if exist "build\Release\LeLauncher.exe" copy "build\Release\LeLauncher.exe" "%DIST_DIR%\" >nul
-if exist "WoW.mfil" copy "WoW.mfil" "%DIST_DIR%\" >nul
+
+if exist "build\%BUILD_TYPE%\LeLauncher.exe" (
+    copy /y "build\%BUILD_TYPE%\LeLauncher.exe" "%DIST_DIR%\" >nul
+) else if exist "build\LeLauncher.exe" (
+    copy /y "build\LeLauncher.exe" "%DIST_DIR%\" >nul
+)
+
+REM Bundle runtime DLLs
+if exist "build\%BUILD_TYPE%\*.dll" copy /y "build\%BUILD_TYPE%\*.dll" "%DIST_DIR%\" >nul
+if exist "build\*.dll" copy /y "build\*.dll" "%DIST_DIR%\" >nul
+if exist "vcpkg_installed\x64-windows\bin\*.dll" copy /y "vcpkg_installed\x64-windows\bin\*.dll" "%DIST_DIR%\" >nul
+
+REM Bundle GTK 4 schemas
+if exist "vcpkg_installed\x64-windows\share\glib-2.0\schemas" (
+    mkdir "%DIST_DIR%\share\glib-2.0\schemas" >nul 2>&1
+    copy /y "vcpkg_installed\x64-windows\share\glib-2.0\schemas\*.*" "%DIST_DIR%\share\glib-2.0\schemas\" >nul
+)
+
+if exist "WoW.mfil" copy /y "WoW.mfil" "%DIST_DIR%\" >nul
 if exist "data" xcopy /e /i /y "data" "%DIST_DIR%\data" >nul
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\LeLauncher-Windows-x64' -DestinationPath 'dist\LeLauncher-Windows-x64.zip' -Force"
-echo [SUCCESS] Distribution package created: dist\LeLauncher-Windows-x64.zip
+
+echo [SUCCESS] Distribution folder created at %DIST_DIR%
 exit /b 0
