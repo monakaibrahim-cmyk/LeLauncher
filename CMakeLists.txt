@@ -57,9 +57,7 @@ FetchContent_MakeAvailable(curl)
 message(STATUS "Fetching self-contained static raylib (v5.5)...")
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
-set(CUSTOMIZE_BUILD ON CACHE BOOL "" FORCE)
-set(SUPPORT_MODULE_RAUDIO OFF CACHE BOOL "" FORCE)
-set(SUPPORT_MODULE_RMODELS OFF CACHE BOOL "" FORCE)
+set(CUSTOMIZE_BUILD OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     raylib
@@ -69,9 +67,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
-# Suppress false-positive third-party warnings in external raylib code on GCC
-if (TARGET raylib AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(raylib PRIVATE -Wno-stringop-overflow)
+# Suppress compiler warnings from external raylib codebase (e.g. jar_mod.h stringop-overflow)
+if (TARGET raylib)
+    if (MSVC)
+        target_compile_options(raylib PRIVATE /W0)
+    else()
+        target_compile_options(raylib PRIVATE -w)
+    endif()
 endif()
 
 message(STATUS "Fetching self-contained raygui (v4.0)...")
