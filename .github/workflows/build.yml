@@ -19,6 +19,18 @@ on:
         options:
           - Release
           - Debug
+      gui_backend:
+        description: 'GUI Backend (RAYGUI or GTK)'
+        required: true
+        default: 'RAYGUI'
+        type: choice
+        options:
+          - RAYGUI
+          - GTK
+
+# Suppress Node.js 20 deprecation warning on runners
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
 
 permissions:
   contents: write
@@ -40,10 +52,11 @@ jobs:
         run: |
           chmod +x ./setup.sh
           BUILD_CFG="${{ inputs.build_type || 'Release' }}"
+          GUI_OPT="${{ inputs.gui_backend || 'RAYGUI' }}"
           if [ "$BUILD_CFG" = "Debug" ]; then
-            ./setup.sh --clean --debug --package
+            ./setup.sh --clean --debug --gui="${GUI_OPT}" --package
           else
-            ./setup.sh --clean --release --package
+            ./setup.sh --clean --release --gui="${GUI_OPT}" --package
           fi
 
       - name: Upload Linux Distribution Artifact
@@ -81,7 +94,8 @@ jobs:
         shell: msys2 {0}
         run: |
           BUILD_CFG="${{ inputs.build_type || 'Release' }}"
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="${BUILD_CFG}"
+          GUI_OPT="${{ inputs.gui_backend || 'RAYGUI' }}"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="${BUILD_CFG}" -DGUI_BACKEND="${GUI_OPT}"
           cmake --build build
 
       - name: Bundle Standalone Windows Distribution
@@ -100,13 +114,13 @@ jobs:
             cp -r data "${DIST_DIR}/"
           fi
 
-          # Bundle GTK4 compiled GSettings schemas
+          # Bundle GTK4 compiled GSettings schemas (if present)
           if [ -f "${MINGW_PREFIX}/share/glib-2.0/schemas/gschemas.compiled" ]; then
             mkdir -p "${DIST_DIR}/share/glib-2.0/schemas"
             cp "${MINGW_PREFIX}/share/glib-2.0/schemas/gschemas.compiled" "${DIST_DIR}/share/glib-2.0/schemas/"
           fi
 
-          # Bundle icon themes for GTK4 widgets
+          # Bundle icon themes for GTK4 widgets (if present)
           if [ -d "${MINGW_PREFIX}/share/icons/hicolor" ]; then
             mkdir -p "${DIST_DIR}/share/icons"
             cp -r "${MINGW_PREFIX}/share/icons/hicolor" "${DIST_DIR}/share/icons/"

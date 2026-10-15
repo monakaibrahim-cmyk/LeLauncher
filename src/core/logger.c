@@ -1,13 +1,13 @@
 #include <core/logger.h>
 #include <core/Version.h>
 #include <Globals.h>
-#include <glib.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <stdbool.h>
 
 #if defined(_WIN32)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -18,7 +18,19 @@
     #endif
     #include <windows.h>
 #else
+    #include <unistd.h>
+    #include <strings.h>
     #include <sys/time.h>
+    #include <sys/stat.h>
+#endif
+
+#if defined(USE_GTK4)
+    #include <glib.h>
+#else
+    #include <stdatomic.h>
+    #if !defined(_WIN32)
+        #include <pthread.h>
+    #endif
 #endif
 
 typedef struct {
@@ -30,6 +42,7 @@ typedef struct {
     char     message[1024];
 } LogEntry;
 
+#if defined(USE_GTK4)
 typedef struct {
     LogUiCallback callback;
     LogLevel      level;
@@ -37,25 +50,156 @@ typedef struct {
     char          formatted[1280];
     void          *user_data;
 } UiLogDispatch;
+#endif
+
+/* ==============================================================================
+ * Platform Abstractions (GLib vs Native C23/POSIX/Win32)
+ * ============================================================================== */
+#if defined(USE_GTK4)
+    #define MUTEX_TYPE            GMutex
+    #define MUTEX_INIT(m)         g_mutex_init(m)
+    #define MUTEX_LOCK(m)         g_mutex_lock(m)
+    #define MUTEX_UNLOCK(m)       g_mutex_unlock(m)
+    #define MUTEX_CLEAR(m)        g_mutex_clear(m)
+
+    #define COND_TYPE             GCond
+    #define COND_INIT(c)          g_cond_init(c)
+    #define COND_WAIT(c, m)       g_cond_wait(c, m)
+    #define COND_SIGNAL(c)        g_cond_signal(c)
+    #define COND_CLEAR(c)         g_cond_clear(c)
+
+    #define ATOMIC_INT_TYPE       gint
+    #define ATOMIC_GET(v)         g_atomic_int_get(&(v))
+    #define ATOMIC_SET(v, val)    g_atomic_int_set(&(v), (val))
+
+    #define STRICMP(a, b)         g_ascii_strcasecmp((a), (b))
+    #define THREAD_USLEEP(us)     g_usleep(us)
+#elif defined(_WIN32)
+    #define MUTEX_TYPE            CRITICAL_SECTION
+    #define MUTEX_INIT(m)         InitializeCriticalSection(m)
+    #define MUTEX_LOCK(m)         EnterCriticalSection(m)
+    #define MUTEX_UNLOCK(m)       LeaveCriticalSection(m)
+    #define MUTEX_CLEAR(m)        DeleteCriticalSection(m)
+
+    #define COND_TYPE             CONDITION_VARIABLE
+    #define COND_INIT(c)          InitializeConditionVariable(c)
+    #define COND_WAIT(c, m)       SleepConditionVariableCS(c, m, INFINITE)
+    #define COND_SIGNAL(c)        WakeConditionVariable(c)
+    #define COND_CLEAR(c)         ((void)0)
+
+    #define ATOMIC_INT_TYPE       atomic_int
+    #define ATOMIC_GET(v)         atomic_load(&(v))
+    #define ATOMIC_SET(v, val)    atomic_store(&(v), (val))
+
+    #define STRICMP(a, b)         _stricmp((a), (b))
+    #define THREAD_USLEEP(us)     Sleep(((us) + 999) / 1000)
+#else
+    #define MUTEX_TYPE            pthread_mutex_t
+    #define MUTEX_INIT(m)         pthread_mutex_init(m, NULL)
+    #define MUTEX_LOCK(m)         pthread_mutex_lock(m)
+    #define MUTEX_UNLOCK(m)       pthread_mutex_unlock(m)
+    #define MUTEX_CLEAR(m)        pthread_mutex_destroy(m)
+
+    #define COND_TYPE             pthread_cond_t
+    #define COND_INIT(c)          pthread_cond_init(c, NULL)
+    #define COND_WAIT(c, m)       pthread_cond_wait(c, m)
+    #define COND_SIGNAL(c)        pthread_cond_signal(c)
+    #define COND_CLEAR(c)         pthread_cond_destroy(c)
+
+    #define ATOMIC_INT_TYPE       atomic_int
+    #define ATOMIC_GET(v)         atomic_load(&(v))
+    #define ATOMIC_SET(v, val)    atomic_store(&(v), (val))
+
+    #define STRICMP(a, b)         strcasecmp((a), (b))
+    #define THREAD_USLEEP(us)     usleep(us)
+#endif
+
+#if !defined(USE_GTK4)
+typedef struct LogNode {
+    LogEntry       *entry;
+    struct LogNode *next;
+} LogNode;
+
+typedef struct {
+    LogNode *head;
+    LogNode *tail;
+    size_t   length;
+} LogQueue;
+
+static LogQueue *__queue_new__(void) {
+    return (LogQueue *)calloc(1, sizeof(LogQueue));
+}
+
+static void __queue_push_tail__(LogQueue *q, LogEntry *entry) {
+    if (!q || !entry) return;
+    LogNode *node = (LogNode *)malloc(sizeof(LogNode));
+    node->entry = entry;
+    node->next = NULL;
+    if (q->tail) {
+        q->tail->next = node;
+        q->tail = node;
+    } else {
+        q->head = q->tail = node;
+    }
+    q->length++;
+}
+
+static LogEntry *__queue_pop_head__(LogQueue *q) {
+    if (!q || !q->head) return NULL;
+    LogNode *node = q->head;
+    LogEntry *entry = node->entry;
+    q->head = node->next;
+    if (!q->head) q->tail = NULL;
+    free(node);
+    q->length--;
+    return entry;
+}
+
+static bool __queue_is_empty__(LogQueue *q) {
+    return (!q || q->head == NULL);
+}
+
+static void __queue_free__(LogQueue *q) {
+    if (!q) return;
+    LogEntry *e;
+    while ((e = __queue_pop_head__(q)) != NULL) {
+        free(e);
+    }
+    free(q);
+}
+#endif
 
 #if defined(DEBUG) || defined(_DEBUG) || !defined(NDEBUG)
-static gint            g_current_level = (gint)LOG_LEVEL_TRACE;
+static ATOMIC_INT_TYPE g_current_level = (ATOMIC_INT_TYPE)LOG_LEVEL_TRACE;
 #else
-static gint            g_current_level = (gint)LOG_LEVEL_INFO;
+static ATOMIC_INT_TYPE g_current_level = (ATOMIC_INT_TYPE)LOG_LEVEL_INFO;
 #endif
+
 static char            g_log_file_path[512] = "Logs/LeLauncher.log";
 static FILE           *g_log_file = NULL;
-static GMutex          g_file_mutex;
+static MUTEX_TYPE      g_file_mutex;
+
+#if defined(USE_GTK4)
 static GQueue         *g_log_queue = NULL;
-static GMutex          g_log_mutex;
-static GCond           g_log_cond;
 static GThread        *g_worker_thread = NULL;
+#else
+static LogQueue       *g_log_queue = NULL;
+#if defined(_WIN32)
+static HANDLE          g_worker_thread = NULL;
+#else
+static pthread_t       g_worker_thread = 0;
+#endif
+#endif
+
+static MUTEX_TYPE      g_log_mutex;
+static COND_TYPE       g_log_cond;
 static bool            g_running = false;
 static bool            g_initialized = false;
 static bool            g_shut_down = false;
 
 static void __ensure_parent_dir__(const char *filepath) {
     if (!filepath || filepath[0] == '\0') return;
+#if defined(USE_GTK4)
     char *dir = g_path_get_dirname(filepath);
     if (dir) {
         if (strcmp(dir, ".") != 0 && strcmp(dir, "/") != 0) {
@@ -63,17 +207,35 @@ static void __ensure_parent_dir__(const char *filepath) {
         }
         g_free(dir);
     }
+#else
+    char dir[512];
+    strncpy(dir, filepath, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *p = strrchr(dir, '/');
+#if defined(_WIN32)
+    char *p2 = strrchr(dir, '\\');
+    if (p2 && (!p || p2 > p)) p = p2;
+#endif
+    if (!p) return;
+    *p = '\0';
+    if (dir[0] == '\0' || strcmp(dir, ".") == 0) return;
+#if defined(_WIN32)
+    CreateDirectoryA(dir, NULL);
+#else
+    mkdir(dir, 0755);
+#endif
+#endif
 }
 
 #if defined(DEBUG) || defined(_DEBUG) || !defined(NDEBUG)
-static gint            g_log_include_file_line = 1;
+static ATOMIC_INT_TYPE g_log_include_file_line = 1;
 #else
-static gint            g_log_include_file_line = 0;
+static ATOMIC_INT_TYPE g_log_include_file_line = 0;
 #endif
 
 static LogUiCallback   g_ui_callback = NULL;
 static void           *g_ui_user_data = NULL;
-static GMutex          g_ui_mutex;
+static MUTEX_TYPE      g_ui_mutex;
 
 static const char *__file_basename__(const char *path) {
     if (!path || path[0] == '\0') return NULL;
@@ -153,7 +315,7 @@ static void __get_current_timestamp__(char *buf, size_t max_len) {
 static void __format_entry__(const LogEntry *e, char *out, size_t max_len) {
     const char *lvl_str = __level_to_string__(e->level);
     bool has_system = (e->system[0] != '\0');
-    bool show_file_line = (g_atomic_int_get(&g_log_include_file_line) != 0 && e->file_line[0] != '\0');
+    bool show_file_line = (ATOMIC_GET(g_log_include_file_line) != 0 && e->file_line[0] != '\0');
 
     if (has_system && show_file_line) {
         snprintf(out, max_len, "%s [%s] [%s] [%s] [%s] : %s",
@@ -170,6 +332,7 @@ static void __format_entry__(const LogEntry *e, char *out, size_t max_len) {
     }
 }
 
+#if defined(USE_GTK4)
 static gboolean __dispatch_ui_idle__(gpointer data) {
     UiLogDispatch *d = (UiLogDispatch *)data;
     if (d && d->callback) {
@@ -178,36 +341,61 @@ static gboolean __dispatch_ui_idle__(gpointer data) {
     g_free(d);
     return G_SOURCE_REMOVE;
 }
+#endif
 
-static gpointer __logger_worker__(gpointer data) {
+#if defined(USE_GTK4)
+static gpointer __logger_worker__(gpointer data)
+#elif defined(_WIN32)
+static DWORD WINAPI __logger_worker__(LPVOID data)
+#else
+static void *__logger_worker__(void *data)
+#endif
+{
     (void)data;
 
     while (true) {
-        g_mutex_lock(&g_log_mutex);
+        MUTEX_LOCK(&g_log_mutex);
+#if defined(USE_GTK4)
         while (g_running && g_queue_is_empty(g_log_queue)) {
-            g_cond_wait(&g_log_cond, &g_log_mutex);
+            COND_WAIT(&g_log_cond, &g_log_mutex);
         }
-
         if (!g_running && g_queue_is_empty(g_log_queue)) {
-            g_mutex_unlock(&g_log_mutex);
+            MUTEX_UNLOCK(&g_log_mutex);
             break;
         }
-
         GQueue local_queue = G_QUEUE_INIT;
         while (!g_queue_is_empty(g_log_queue)) {
             g_queue_push_tail(&local_queue, g_queue_pop_head(g_log_queue));
         }
-        g_mutex_unlock(&g_log_mutex);
+#else
+        while (g_running && __queue_is_empty__(g_log_queue)) {
+            COND_WAIT(&g_log_cond, &g_log_mutex);
+        }
+        if (!g_running && __queue_is_empty__(g_log_queue)) {
+            MUTEX_UNLOCK(&g_log_mutex);
+            break;
+        }
+        LogQueue local_queue = {0};
+        while (!__queue_is_empty__(g_log_queue)) {
+            __queue_push_tail__(&local_queue, __queue_pop_head__(g_log_queue));
+        }
+#endif
+        MUTEX_UNLOCK(&g_log_mutex);
 
         LogEntry *entry = NULL;
         bool has_warn_or_error = false;
 
-        while ((entry = (LogEntry *)g_queue_pop_head(&local_queue)) != NULL) {
+#if defined(USE_GTK4)
+        while ((entry = (LogEntry *)g_queue_pop_head(&local_queue)) != NULL)
+#else
+        while ((entry = __queue_pop_head__(&local_queue)) != NULL)
+#endif
+        {
             const char *lvl_str = __level_to_string__(entry->level);
             const char *color   = __level_to_color__(entry->level);
             const char *reset   = "\033[0m";
             bool has_system     = (entry->system[0] != '\0');
-            bool show_file_line = (g_atomic_int_get(&g_log_include_file_line) != 0 && entry->file_line[0] != '\0');
+            bool show_file_line = (ATOMIC_GET(g_log_include_file_line) != 0 && entry->file_line[0] != '\0');
 
             /* Terminal output */
             FILE *stream = (entry->level >= LOG_LEVEL_WARN) ? stderr : stdout;
@@ -230,7 +418,7 @@ static gpointer __logger_worker__(gpointer data) {
             }
 
             /* File output */
-            g_mutex_lock(&g_file_mutex);
+            MUTEX_LOCK(&g_file_mutex);
             if (g_log_file) {
                 if (has_system && show_file_line) {
                     fprintf(g_log_file, "%s [%s] [%s] [%s] [%s] : %s\n",
@@ -256,48 +444,65 @@ static gpointer __logger_worker__(gpointer data) {
                 if (g_log_file) fflush(g_log_file);
                 has_warn_or_error = true;
             }
-            g_mutex_unlock(&g_file_mutex);
+            MUTEX_UNLOCK(&g_file_mutex);
 
-            /* UI main loop dispatch */
-            g_mutex_lock(&g_ui_mutex);
+            /* UI dispatch */
+            MUTEX_LOCK(&g_ui_mutex);
             if (g_ui_callback) {
+#if defined(USE_GTK4)
                 UiLogDispatch *disp = g_new0(UiLogDispatch, 1);
                 disp->callback = g_ui_callback;
                 disp->level = entry->level;
                 strncpy(disp->system, entry->system, sizeof(disp->system) - 1);
                 __format_entry__(entry, disp->formatted, sizeof(disp->formatted));
                 disp->user_data = g_ui_user_data;
-
                 g_idle_add(__dispatch_ui_idle__, disp);
+#else
+                char formatted[1280];
+                __format_entry__(entry, formatted, sizeof(formatted));
+                g_ui_callback(entry->level, entry->system, formatted, g_ui_user_data);
+#endif
             }
-            g_mutex_unlock(&g_ui_mutex);
+            MUTEX_UNLOCK(&g_ui_mutex);
 
+#if defined(USE_GTK4)
             g_free(entry);
+#else
+            free(entry);
+#endif
         }
 
         /* Flush output streams once per batch if not already flushed by a warning */
         if (!has_warn_or_error) {
             fflush(stdout);
-            g_mutex_lock(&g_file_mutex);
+            MUTEX_LOCK(&g_file_mutex);
             if (g_log_file) {
                 fflush(g_log_file);
             }
-            g_mutex_unlock(&g_file_mutex);
+            MUTEX_UNLOCK(&g_file_mutex);
         }
     }
 
+#if defined(USE_GTK4) || !defined(_WIN32)
     return NULL;
+#else
+    return 0;
+#endif
 }
 
 void __logger_init__(void) {
     if (g_initialized) return;
 
-    g_mutex_init(&g_log_mutex);
-    g_cond_init(&g_log_cond);
-    g_mutex_init(&g_ui_mutex);
-    g_mutex_init(&g_file_mutex);
+    MUTEX_INIT(&g_log_mutex);
+    COND_INIT(&g_log_cond);
+    MUTEX_INIT(&g_ui_mutex);
+    MUTEX_INIT(&g_file_mutex);
 
+#if defined(USE_GTK4)
     g_log_queue = g_queue_new();
+#else
+    g_log_queue = __queue_new__();
+#endif
     g_running = true;
 
     const char *env_path = getenv("LELAUNCHER_LOG_FILE");
@@ -307,34 +512,40 @@ void __logger_init__(void) {
 
     const char *env_level = getenv("LELAUNCHER_LOG_LEVEL");
     if (env_level) {
-        if (g_ascii_strcasecmp(env_level, "TRACE") == 0) {
-            g_atomic_int_set(&g_current_level, (gint)LOG_LEVEL_TRACE);
-        } else if (g_ascii_strcasecmp(env_level, "DEBUG") == 0) {
-            g_atomic_int_set(&g_current_level, (gint)LOG_LEVEL_DEBUG);
-        } else if (g_ascii_strcasecmp(env_level, "INFO") == 0) {
-            g_atomic_int_set(&g_current_level, (gint)LOG_LEVEL_INFO);
-        } else if (g_ascii_strcasecmp(env_level, "WARN") == 0 || g_ascii_strcasecmp(env_level, "WARNING") == 0) {
-            g_atomic_int_set(&g_current_level, (gint)LOG_LEVEL_WARN);
-        } else if (g_ascii_strcasecmp(env_level, "ERROR") == 0) {
-            g_atomic_int_set(&g_current_level, (gint)LOG_LEVEL_ERROR);
-        } else if (g_ascii_strcasecmp(env_level, "FATAL") == 0) {
-            g_atomic_int_set(&g_current_level, (gint)LOG_LEVEL_FATAL);
+        if (STRICMP(env_level, "TRACE") == 0) {
+            ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)LOG_LEVEL_TRACE);
+        } else if (STRICMP(env_level, "DEBUG") == 0) {
+            ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)LOG_LEVEL_DEBUG);
+        } else if (STRICMP(env_level, "INFO") == 0) {
+            ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)LOG_LEVEL_INFO);
+        } else if (STRICMP(env_level, "WARN") == 0 || STRICMP(env_level, "WARNING") == 0) {
+            ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)LOG_LEVEL_WARN);
+        } else if (STRICMP(env_level, "ERROR") == 0) {
+            ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)LOG_LEVEL_ERROR);
+        } else if (STRICMP(env_level, "FATAL") == 0) {
+            ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)LOG_LEVEL_FATAL);
         }
     }
 
     const char *env_file_line = getenv("LELAUNCHER_LOG_FILE_LINE");
     if (env_file_line) {
-        if (strcmp(env_file_line, "1") == 0 || g_ascii_strcasecmp(env_file_line, "true") == 0) {
-            g_atomic_int_set(&g_log_include_file_line, 1);
-        } else if (strcmp(env_file_line, "0") == 0 || g_ascii_strcasecmp(env_file_line, "false") == 0) {
-            g_atomic_int_set(&g_log_include_file_line, 0);
+        if (strcmp(env_file_line, "1") == 0 || STRICMP(env_file_line, "true") == 0) {
+            ATOMIC_SET(g_log_include_file_line, 1);
+        } else if (strcmp(env_file_line, "0") == 0 || STRICMP(env_file_line, "false") == 0) {
+            ATOMIC_SET(g_log_include_file_line, 0);
         }
     }
 
     __ensure_parent_dir__(g_log_file_path);
     g_log_file = fopen(g_log_file_path, "a");
 
+#if defined(USE_GTK4)
     g_worker_thread = g_thread_new("logger_worker", __logger_worker__, NULL);
+#elif defined(_WIN32)
+    g_worker_thread = CreateThread(NULL, 0, __logger_worker__, NULL, 0, NULL);
+#else
+    pthread_create(&g_worker_thread, NULL, __logger_worker__, NULL);
+#endif
     g_initialized = true;
 
     LOG_INFO("core", "%s v%s (%s) | Built: %s %s | Compiler: %s",
@@ -347,54 +558,71 @@ void __logger_shutdown__(void) {
 
     LOG_INFO("core", "Shutting down logger worker...");
 
-    g_mutex_lock(&g_log_mutex);
+    MUTEX_LOCK(&g_log_mutex);
     g_running = false;
-    g_cond_signal(&g_log_cond);
-    g_mutex_unlock(&g_log_mutex);
+    COND_SIGNAL(&g_log_cond);
+    MUTEX_UNLOCK(&g_log_mutex);
 
+#if defined(USE_GTK4)
     if (g_worker_thread) {
         g_thread_join(g_worker_thread);
         g_worker_thread = NULL;
     }
+#elif defined(_WIN32)
+    if (g_worker_thread) {
+        WaitForSingleObject(g_worker_thread, INFINITE);
+        CloseHandle(g_worker_thread);
+        g_worker_thread = NULL;
+    }
+#else
+    if (g_worker_thread) {
+        pthread_join(g_worker_thread, NULL);
+        g_worker_thread = 0;
+    }
+#endif
 
-    g_mutex_lock(&g_file_mutex);
+    MUTEX_LOCK(&g_file_mutex);
     if (g_log_file) {
         fflush(g_log_file);
         fclose(g_log_file);
         g_log_file = NULL;
     }
-    g_mutex_unlock(&g_file_mutex);
+    MUTEX_UNLOCK(&g_file_mutex);
 
     if (g_log_queue) {
+#if defined(USE_GTK4)
         LogEntry *entry = NULL;
         while ((entry = (LogEntry *)g_queue_pop_head(g_log_queue)) != NULL) {
             g_free(entry);
         }
         g_queue_free(g_log_queue);
+#else
+        __queue_free__(g_log_queue);
+#endif
         g_log_queue = NULL;
     }
 
-    g_mutex_clear(&g_log_mutex);
-    g_cond_clear(&g_log_cond);
-    g_mutex_clear(&g_ui_mutex);
-    g_mutex_clear(&g_file_mutex);
+    MUTEX_CLEAR(&g_log_mutex);
+    COND_CLEAR(&g_log_cond);
+    MUTEX_CLEAR(&g_ui_mutex);
+    MUTEX_CLEAR(&g_file_mutex);
 
     g_initialized = false;
     g_shut_down = true;
 }
 
 void __logger_set_level__(LogLevel level) {
-    g_atomic_int_set(&g_current_level, (gint)level);
+    ATOMIC_SET(g_current_level, (ATOMIC_INT_TYPE)level);
 }
 
 LogLevel __logger_get_level__(void) {
-    return (LogLevel)g_atomic_int_get(&g_current_level);
+    return (LogLevel)ATOMIC_GET(g_current_level);
 }
 
 void __logger_set_file_path__(const char *path) {
     if (!path || strlen(path) == 0) return;
 
-    g_mutex_lock(&g_file_mutex);
+    MUTEX_LOCK(&g_file_mutex);
     strncpy(g_log_file_path, path, sizeof(g_log_file_path) - 1);
     g_log_file_path[sizeof(g_log_file_path) - 1] = '\0';
 
@@ -404,7 +632,7 @@ void __logger_set_file_path__(const char *path) {
     }
     __ensure_parent_dir__(g_log_file_path);
     g_log_file = fopen(g_log_file_path, "a");
-    g_mutex_unlock(&g_file_mutex);
+    MUTEX_UNLOCK(&g_file_mutex);
 }
 
 const char *__logger_get_file_path__(void) {
@@ -412,18 +640,18 @@ const char *__logger_get_file_path__(void) {
 }
 
 void __logger_set_ui_callback__(LogUiCallback callback, void *user_data) {
-    g_mutex_lock(&g_ui_mutex);
+    MUTEX_LOCK(&g_ui_mutex);
     g_ui_callback = callback;
     g_ui_user_data = user_data;
-    g_mutex_unlock(&g_ui_mutex);
+    MUTEX_UNLOCK(&g_ui_mutex);
 }
 
 void __logger_set_include_file_line__(bool enable) {
-    g_atomic_int_set(&g_log_include_file_line, enable ? 1 : 0);
+    ATOMIC_SET(g_log_include_file_line, enable ? 1 : 0);
 }
 
 bool __logger_get_include_file_line__(void) {
-    return g_atomic_int_get(&g_log_include_file_line) != 0;
+    return ATOMIC_GET(g_log_include_file_line) != 0;
 }
 
 void __logger_log__(LogLevel level, const char *system, const char *file, int line, const char *func, const char *fmt, ...) {
@@ -431,7 +659,7 @@ void __logger_log__(LogLevel level, const char *system, const char *file, int li
         __logger_init__();
     }
 
-    if ((gint)level < g_atomic_int_get(&g_current_level)) return;
+    if ((int)level < (int)ATOMIC_GET(g_current_level)) return;
 
     const char *resolved_system = __infer_system__(system, file);
     const char *base_file = __file_basename__(file);
@@ -452,7 +680,7 @@ void __logger_log__(LogLevel level, const char *system, const char *file, int li
         FILE *stream = (level >= LOG_LEVEL_WARN) ? stderr : stdout;
 
         bool has_system     = (resolved_system && resolved_system[0] != '\0');
-        bool show_file_line = (g_atomic_int_get(&g_log_include_file_line) != 0 && base_file && line > 0);
+        bool show_file_line = (ATOMIC_GET(g_log_include_file_line) != 0 && base_file && line > 0);
 
         if (has_system && show_file_line) {
             fprintf(stream, "%s [%s%s%s] [%s] [%s:%d] [%s] : %s\n",
@@ -471,7 +699,13 @@ void __logger_log__(LogLevel level, const char *system, const char *file, int li
         return;
     }
 
+#if defined(USE_GTK4)
     LogEntry *entry = g_new0(LogEntry, 1);
+#else
+    LogEntry *entry = (LogEntry *)calloc(1, sizeof(LogEntry));
+#endif
+    if (!entry) return;
+
     entry->level = level;
     __get_current_timestamp__(entry->timestamp, sizeof(entry->timestamp));
 
@@ -493,33 +727,45 @@ void __logger_log__(LogLevel level, const char *system, const char *file, int li
     vsnprintf(entry->message, sizeof(entry->message), fmt, args);
     va_end(args);
 
-    g_mutex_lock(&g_log_mutex);
+    MUTEX_LOCK(&g_log_mutex);
+#if defined(USE_GTK4)
     if (g_queue_get_length(g_log_queue) > 2000) {
         LogEntry *dropped = (LogEntry *)g_queue_pop_head(g_log_queue);
         g_free(dropped);
     }
     g_queue_push_tail(g_log_queue, entry);
-    g_cond_signal(&g_log_cond);
-    g_mutex_unlock(&g_log_mutex);
+#else
+    if (g_log_queue->length > 2000) {
+        LogEntry *dropped = __queue_pop_head__(g_log_queue);
+        free(dropped);
+    }
+    __queue_push_tail__(g_log_queue, entry);
+#endif
+    COND_SIGNAL(&g_log_cond);
+    MUTEX_UNLOCK(&g_log_mutex);
 }
 
 void __logger_flush__(void) {
     if (!g_initialized) return;
 
     while (true) {
-        g_mutex_lock(&g_log_mutex);
+        MUTEX_LOCK(&g_log_mutex);
+#if defined(USE_GTK4)
         bool empty = g_queue_is_empty(g_log_queue);
-        g_mutex_unlock(&g_log_mutex);
+#else
+        bool empty = __queue_is_empty__(g_log_queue);
+#endif
+        MUTEX_UNLOCK(&g_log_mutex);
 
         if (empty) break;
-        g_usleep(1000);
+        THREAD_USLEEP(1000);
     }
 
-    g_mutex_lock(&g_file_mutex);
+    MUTEX_LOCK(&g_file_mutex);
     if (g_log_file) {
         fflush(g_log_file);
     }
-    g_mutex_unlock(&g_file_mutex);
+    MUTEX_UNLOCK(&g_file_mutex);
 }
 
 INITIALIZER(__logger_auto_init__) {

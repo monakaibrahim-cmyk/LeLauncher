@@ -19,6 +19,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 BUILD_TYPE="Release"
+GUI_BACKEND="AUTO"
 CLEAN_BUILD=0
 DEPS_ONLY=0
 PACKAGE_BUNDLE=0
@@ -28,13 +29,16 @@ __usage__() {
     echo -e "${BOLD}Usage:${NC} $0 [options]"
     echo ""
     echo "Options:"
-    echo "  --release      Build in Release configuration (default, optimized, file:line omitted)"
-    echo "  --debug        Build in Debug configuration (with debug symbols & [file:line] logging)"
-    echo "  --clean        Remove existing build directory before compiling"
-    echo "  --deps-only    Install required system dependencies without building"
-    echo "  --package      Package built launcher and runtime assets into dist/ tarball"
-    echo "  --run          Execute the launcher immediately after a successful build"
-    echo "  -h, --help     Show this help message"
+    echo "  --release          Build in Release configuration (default, optimized, file:line omitted)"
+    echo "  --debug            Build in Debug configuration (with debug symbols & [file:line] logging)"
+    echo "  --gui=BACKEND      Specify GUI backend: 'auto' (default), 'raygui', or 'gtk'"
+    echo "  --raygui           Shortcut for --gui=raygui (self-contained, 0 debian packages required)"
+    echo "  --gtk              Shortcut for --gui=gtk (requires GTK 4 & glib-compile-resources)"
+    echo "  --clean            Remove existing build directory before compiling"
+    echo "  --deps-only        Install required system dependencies without building"
+    echo "  --package          Package built launcher and runtime assets into dist/ tarball"
+    echo "  --run              Execute the launcher immediately after a successful build"
+    echo "  -h, --help         Show this help message"
     echo ""
 }
 
@@ -47,6 +51,24 @@ while [[ $# -gt 0 ]]; do
             ;;
         --release)
             BUILD_TYPE="Release"
+            shift
+            ;;
+        --gui=*)
+            GUI_BACKEND="${1#*=}"
+            GUI_BACKEND="$(echo "$GUI_BACKEND" | tr '[:lower:]' '[:upper:]')"
+            shift
+            ;;
+        --gui)
+            GUI_BACKEND="$2"
+            GUI_BACKEND="$(echo "$GUI_BACKEND" | tr '[:lower:]' '[:upper:]')"
+            shift 2
+            ;;
+        --raygui)
+            GUI_BACKEND="RAYGUI"
+            shift
+            ;;
+        --gtk)
+            GUI_BACKEND="GTK"
             shift
             ;;
         --clean)
@@ -79,6 +101,7 @@ done
 
 echo -e "${CYAN}${BOLD}=== LeLauncher Automated Setup & Build ===${NC}"
 echo -e "Target Configuration: ${YELLOW}${BUILD_TYPE}${NC}"
+echo -e "GUI Backend:          ${YELLOW}${GUI_BACKEND}${NC}"
 
 # Check for root/sudo elevation helper
 SUDO=""
@@ -100,9 +123,24 @@ __get_missing_dependencies__() {
     local missing=()
     if ! command -v cmake >/dev/null 2>&1; then missing+=("cmake"); fi
     if ! command -v git >/dev/null 2>&1; then missing+=("git"); fi
-    if ! command -v pkg-config >/dev/null 2>&1 && ! command -v pkgconf >/dev/null 2>&1; then missing+=("pkg-config"); fi
-    if ! command -v glib-compile-resources >/dev/null 2>&1; then missing+=("glib-compile-resources (libglib2.0-dev-bin)"); fi
-    if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then missing+=("gtk4 (libgtk-4-dev)"); fi
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then missing+=("build-essential (gcc/clang)"); fi
+
+    if [[ "$GUI_BACKEND" == "GTK" ]]; then
+        if ! command -v pkg-config >/dev/null 2>&1 && ! command -v pkgconf >/dev/null 2>&1; then missing+=("pkg-config"); fi
+        if ! command -v glib-compile-resources >/dev/null 2>&1; then missing+=("glib-compile-resources (libglib2.0-dev-bin)"); fi
+        if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then missing+=("gtk4 (libgtk-4-dev)"); fi
+    elif [[ "$GUI_BACKEND" == "AUTO" ]]; then
+        local gtk_missing=0
+        if ! command -v glib-compile-resources >/dev/null 2>&1; then gtk_missing=1; fi
+        if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then gtk_missing=1; fi
+        if [[ $gtk_missing -eq 1 ]]; then
+            if [[ $CAN_SUDO_NONINTERACTIVE -eq 0 ]] && ! [ -t 0 ]; then
+                echo -e "${YELLOW}[NOTE] GTK 4 is not installed and non-interactive sudo elevation is unavailable in CI.${NC}"
+                echo -e "${GREEN}[NOTE] Automatically selecting self-contained Raygui backend (0 debian packages required)!${NC}"
+                GUI_BACKEND="RAYGUI"
+            fi
+        fi
+    fi
     echo "${missing[*]}"
 }
 
@@ -227,7 +265,7 @@ __install_dependencies__() {
 if __needs_dependencies__ || [[ $DEPS_ONLY -eq 1 ]]; then
     __install_dependencies__
 else
-    echo -e "${GREEN}✓ All required build tools and GTK 4 libraries are already present.${NC}"
+    echo -e "${GREEN}✓ All required build tools and libraries are already present.${NC}"
 fi
 
 if [[ $DEPS_ONLY -eq 1 ]]; then
@@ -244,9 +282,10 @@ fi
 # Determine optimal parallel jobs
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-echo -e "${CYAN}Configuring build with CMake (${BUILD_TYPE})...${NC}"
+echo -e "${CYAN}Configuring build with CMake (${BUILD_TYPE}, Backend: ${GUI_BACKEND})...${NC}"
 cmake -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DGUI_BACKEND="$GUI_BACKEND" \
     -S "$SCRIPT_DIR"
 
 echo -e "${CYAN}Compiling LeLauncher using ${CPU_CORES} parallel cores...${NC}"
