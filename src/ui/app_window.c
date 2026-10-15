@@ -466,6 +466,14 @@ static int __on_patch_download_progress__(const CURLProgress *prog, void *user_d
     return 0;
 }
 
+static inline bool __is_game_client_file__(const char *name) {
+    if (!name) return false;
+    const char *slash = strrchr(name, '/');
+    const char *bslash = strrchr(name, '\\');
+    const char *base = slash ? (slash + 1) : (bslash ? (bslash + 1) : name);
+    return (g_ascii_strcasecmp(base, "WoW.exe") == 0 || g_ascii_strcasecmp(base, "Wow.exe") == 0);
+}
+
 static gpointer __patch_worker_thread__(gpointer user_data) {
     AppWindowContext *ctx = (AppWindowContext *)user_data;
     if (!ctx) return NULL;
@@ -536,7 +544,23 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
         pd->file_name = g_strdup(file->name);
         g_idle_add(__patch_progress_idle_cb__, pd);
 
+        bool is_game_exe = __is_game_client_file__(file->name);
+#if defined(_WIN32)
+        if (is_game_exe && __is_client_patched__(file->name)) {
+            LOG_INFO("PATCH", "%s is already patched and verified. Skipping re-download.", file->name);
+            verified++;
+            continue;
+        }
+#endif
+
         if (__mfil_verify_file_checksum__(file->name, file->checksum)) {
+#if defined(_WIN32)
+            if (is_game_exe) {
+                LOG_INFO("PATCH", "Preexisting %s matches MFIL unmodified checksum (%s). Applying binary patches...",
+                         file->name, file->checksum);
+                __check_and_patch_client__(file->name);
+            }
+#endif
             verified++;
             continue;
         }
@@ -561,6 +585,12 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
         if (dl_st == CURLDL_OK || dl_st == CURLDL_ALREADY_COMPLETE) {
             downloaded++;
             verified++;
+#if defined(_WIN32)
+            if (is_game_exe) {
+                LOG_INFO("PATCH", "Downloaded %s matches MFIL checksum. Applying binary patches (LAA + DLL injection hook)...", file->name);
+                __check_and_patch_client__(file->name);
+            }
+#endif
         }
     }
 

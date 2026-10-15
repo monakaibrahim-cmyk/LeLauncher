@@ -879,3 +879,120 @@ CURLStatus __mfil_download_partial__(const char *base_location, const char *part
 
     return __download__(&opt, result);
 }
+
+const MfilFile *__mfil_find_file__(const MfilManifest *manifest, const char *filename) {
+    if (!manifest || !manifest->files || !filename || !*filename) {
+        return NULL;
+    }
+
+    const char *target_base = filename;
+    const char *slash = strrchr(filename, '/');
+    const char *bslash = strrchr(filename, '\\');
+    if (slash && (!bslash || slash > bslash)) {
+        target_base = slash + 1;
+    } else if (bslash) {
+        target_base = bslash + 1;
+    }
+
+    for (size_t i = 0; i < manifest->file_count; i++) {
+        const MfilFile *f = &manifest->files[i];
+        if (mfil_strcasecmp(f->name, filename) == 0 ||
+            mfil_strcasecmp(f->file, filename) == 0) {
+            return f;
+        }
+
+        const char *f_base = f->name;
+        const char *f_slash = strrchr(f->name, '/');
+        const char *f_bslash = strrchr(f->name, '\\');
+        if (f_slash && (!f_bslash || f_slash > f_bslash)) {
+            f_base = f_slash + 1;
+        } else if (f_bslash) {
+            f_base = f_bslash + 1;
+        }
+
+        if (mfil_strcasecmp(f_base, target_base) == 0) {
+            return f;
+        }
+    }
+
+    return NULL;
+}
+
+bool __mfil_get_client_unmodified_checksum__(const char *client_filename, char out_checksum[64]) {
+    if (!out_checksum) return false;
+    out_checksum[0] = '\0';
+
+    if (!client_filename || !*client_filename) {
+        client_filename = "WoW.exe";
+    }
+
+    const char *master_candidates[] = {
+        "WoW.mfil",
+        "data/WoW.mfil"
+    };
+
+    MfilMaster master;
+    bool has_master = false;
+    for (size_t i = 0; i < sizeof(master_candidates)/sizeof(master_candidates[0]); i++) {
+        if (__mfil_parse_master_file__(master_candidates[i], &master)) {
+            has_master = true;
+            break;
+        }
+    }
+
+    const char *manifest_paths[8];
+    size_t path_count = 0;
+
+    char client_p1[512] = {0};
+    char client_p2[512] = {0};
+    char client_p3[512] = {0};
+    char manifest_p1[512] = {0};
+    char manifest_p2[512] = {0};
+
+    if (has_master) {
+        if (master.client_partial[0] != '\0') {
+            snprintf(client_p1, sizeof(client_p1), "%s", master.client_partial);
+            manifest_paths[path_count++] = client_p1;
+
+            snprintf(client_p2, sizeof(client_p2), "www/wow-pod-retail/US/12340.direct/%s", master.client_partial);
+            manifest_paths[path_count++] = client_p2;
+
+            snprintf(client_p3, sizeof(client_p3), "data/%s", master.client_partial);
+            manifest_paths[path_count++] = client_p3;
+        }
+        if (master.manifest_partial[0] != '\0') {
+            snprintf(manifest_p1, sizeof(manifest_p1), "%s", master.manifest_partial);
+            manifest_paths[path_count++] = manifest_p1;
+
+            snprintf(manifest_p2, sizeof(manifest_p2), "www/wow-pod-retail/US/12340.direct/%s", master.manifest_partial);
+            manifest_paths[path_count++] = manifest_p2;
+        }
+    }
+
+    /* Fallback candidate locations for client manifests */
+    manifest_paths[path_count++] = "www/wow-pod-retail/US/12340.direct/wow-client-12340-8ccae76521675ea1479f44048a865f1e.mfil";
+    manifest_paths[path_count++] = "wow-client-12340-8ccae76521675ea1479f44048a865f1e.mfil";
+
+    for (size_t i = 0; i < path_count; i++) {
+        MfilManifest manifest;
+        if (__mfil_parse_manifest_file__(manifest_paths[i], &manifest)) {
+            const MfilFile *file = __mfil_find_file__(&manifest, client_filename);
+            if (file && file->checksum[0] != '\0') {
+                __copy_string__(out_checksum, 64, file->checksum);
+                __mfil_free_manifest__(&manifest);
+                if (has_master) __mfil_free_master__(&master);
+                return true;
+            }
+            __mfil_free_manifest__(&manifest);
+        }
+    }
+
+    if (has_master) {
+        __mfil_free_master__(&master);
+    }
+
+    /* Standard default unmodified WoW 3.3.5a 12340 checksum as ultimate fallback */
+    __copy_string__(out_checksum, 64, "45892bdedd0ad70aed4ccd22d9fb5984");
+    return true;
+}
+

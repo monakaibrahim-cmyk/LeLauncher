@@ -85,6 +85,94 @@ bool __apply_patches__(const char *path) {
 
 #include <network/mfil.h>
 
+bool __is_binary_patched__(const char *path) {
+    if (!path || !__is_regular_file__(path)) return false;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    IMAGE_DOS_HEADER dos_header;
+    if (fread(&dos_header, 1, sizeof(dos_header), f) != sizeof(dos_header)) {
+        fclose(f);
+        return false;
+    }
+
+    if (dos_header.e_magic != IMAGE_DOS_SIGNATURE || dos_header.e_lfanew <= 0) {
+        fclose(f);
+        return false;
+    }
+
+    if (fseek(f, dos_header.e_lfanew, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    IMAGE_NT_HEADERS nt_headers;
+    if (fread(&nt_headers, 1, sizeof(nt_headers), f) != sizeof(nt_headers)) {
+        fclose(f);
+        return false;
+    }
+
+    if (nt_headers.Signature != IMAGE_NT_SIGNATURE) {
+        fclose(f);
+        return false;
+    }
+
+    /* 1. Verify Large Address Aware (LAA) flag is set */
+    if (!(nt_headers.FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)) {
+        fclose(f);
+        return false;
+    }
+
+    /* 2. Locate raw offset of StartAddress hook (virtual address 0x0040B7D0) */
+    size_t section_count = nt_headers.FileHeader.NumberOfSections;
+    long sections_offset = dos_header.e_lfanew +
+                           offsetof(IMAGE_NT_HEADERS, OptionalHeader) +
+                           nt_headers.FileHeader.SizeOfOptionalHeader;
+
+    if (fseek(f, sections_offset, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    DWORD hook_raw_offset = 0;
+    const DWORD target_va = 0x0040B7D0;
+
+    for (size_t i = 0; i < section_count; ++i) {
+        IMAGE_SECTION_HEADER section;
+        if (fread(&section, 1, sizeof(section), f) != sizeof(section)) {
+            break;
+        }
+        DWORD begin = nt_headers.OptionalHeader.ImageBase + section.VirtualAddress;
+        DWORD end = begin + section.Misc.VirtualSize;
+        if (target_va >= begin && target_va < end) {
+            hook_raw_offset = target_va - begin + section.PointerToRawData;
+            break;
+        }
+    }
+
+    if (hook_raw_offset == 0) {
+        fclose(f);
+        return false;
+    }
+
+    /* 3. Read 8 bytes at hook_raw_offset: expected "E9 DB A4 0D 00 90 90 90" */
+    if (fseek(f, hook_raw_offset, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    unsigned char hook_bytes[8];
+    if (fread(hook_bytes, 1, sizeof(hook_bytes), f) != sizeof(hook_bytes)) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    const unsigned char expected_hook[8] = { 0xE9, 0xDB, 0xA4, 0x0D, 0x00, 0x90, 0x90, 0x90 };
+    return (memcmp(hook_bytes, expected_hook, sizeof(expected_hook)) == 0);
+}
+
 bool __is_client_patched__(const char *path) {
     if (!path) path = __find_game_client_executable__();
     if (!__is_regular_file__(path)) return false;
@@ -95,15 +183,34 @@ bool __is_client_patched__(const char *path) {
         return false;
     }
 
-    LOG_INFO("PATCH", "%s current checksum: %s (Expected modified: %s)", path, current_md5, EXPECTED_MODIFIED_WOW_MD5);
+    char mfil_unmodified_md5[64] = {0};
+    __mfil_get_client_unmodified_checksum__(path, mfil_unmodified_md5);
 
-    /* If checksum matches the expected modified checksum, client is already patched! */
-    if (_stricmp(current_md5, EXPECTED_MODIFIED_WOW_MD5) == 0) {
-        LOG_INFO("PATCH", "%s matches expected modified checksum. Already patched!", path);
+    LOG_INFO("PATCH", "%s checksum: %s | MFIL unmodified checksum: %s",
+             path, current_md5, mfil_unmodified_md5);
+
+    /* 1. If it matches the MFIL checksum, it is DEFINITELY an unmodified client -> needs patching */
+    if (_stricmp(current_md5, mfil_unmodified_md5) == 0) {
+        LOG_INFO("PATCH", "%s matches MFIL client checksum (%s): clean unmodified executable detected, patching required.",
+                 path, mfil_unmodified_md5);
+        return false;
+    }
+
+    /* 2. If user defined a specific modified MD5, check it */
+    if (strcmp(EXPECTED_MODIFIED_WOW_MD5, "00000000000000000000000000000000") != 0 &&
+        _stricmp(current_md5, EXPECTED_MODIFIED_WOW_MD5) == 0) {
+        LOG_INFO("PATCH", "%s matches EXPECTED_MODIFIED_WOW_MD5 (%s). Client is patched!",
+                 path, EXPECTED_MODIFIED_WOW_MD5);
         return true;
     }
 
-    LOG_INFO("PATCH", "%s does not match modified checksum. Unmodified executable detected, patching required.", path);
+    /* 3. Check internal binary patch signature (LAA header flag + StartAddress hook bytes) */
+    if (__is_binary_patched__(path)) {
+        LOG_INFO("PATCH", "%s binary signature verified (LAA + DLL injection hook present). Client is patched!", path);
+        return true;
+    }
+
+    LOG_INFO("PATCH", "%s differs from MFIL checksum but lacks patch signature. Patching required.", path);
     return false;
 }
 

@@ -81,6 +81,12 @@ CURLStatus __mfil_download_file__(const char *base_location, const MfilManifest 
 /* Download a partial manifest using the downloader engine */
 CURLStatus __mfil_download_partial__(const char *base_location, const char *partial_filename, const char *destination_path, const CURLOptions *options, CURLResult *result);
 
+/* Search a manifest for a file entry matching filename or basename (case-insensitive) */
+const MfilFile *__mfil_find_file__(const MfilManifest *manifest, const char *filename);
+
+/* Lookup the unmodified checksum for a client executable across known MFIL manifests */
+bool __mfil_get_client_unmodified_checksum__(const char *client_filename, char out_checksum[64]);
+
 /* Calculate MD5 checksum of a file, writing 32-hex chars + null terminator into out_md5 */
 bool __mfil_calculate_file_checksum__(const char *filepath, char out_md5[33]);
 
