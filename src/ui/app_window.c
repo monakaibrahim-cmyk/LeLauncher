@@ -29,6 +29,7 @@
     #include <client/Patch.h>
 #else
     #include <unistd.h>
+    #include <sys/stat.h>
 #endif
 
 typedef struct {
@@ -474,12 +475,43 @@ static inline bool __is_game_client_file__(const char *name) {
     return (g_ascii_strcasecmp(base, "WoW.exe") == 0 || g_ascii_strcasecmp(base, "Wow.exe") == 0);
 }
 
+static inline bool __file_exists__(const char *path) {
+    if (!path || !*path) return false;
+#if defined(_WIN32)
+    DWORD attrs = GetFileAttributesA(path);
+    return (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY));
+#else
+    return (access(path, F_OK) == 0);
+#endif
+}
+
+static inline int64_t __get_file_size__(const char *path) {
+    if (!path || !*path) return -1;
+#if defined(_WIN32)
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+        return -1;
+    }
+    LARGE_INTEGER size;
+    size.HighPart = fad.nFileSizeHigh;
+    size.LowPart = fad.nFileSizeLow;
+    return (int64_t)size.QuadPart;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    return (int64_t)st.st_size;
+#endif
+}
+
 static gpointer __patch_worker_thread__(gpointer user_data) {
     AppWindowContext *ctx = (AppWindowContext *)user_data;
     if (!ctx) return NULL;
 
     LOG_INFO("PATCH", "Beginning game archive check and verification (.mfil)...");
 
+    /* 1. Locate or download master manifest (WoW.mfil) */
     const char *master_path = "WoW.mfil";
     MfilMaster master;
     bool has_master = __mfil_parse_master_file__(master_path, &master);
@@ -489,34 +521,89 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
     }
 
     const char *base_location = "http://127.0.0.1/wow-pod-retail/US/12340.direct/";
-    const char *partial_file = "wow-12340-94ee8476adb4ee065bfa9e73193d1496.mfil";
+    const char *data_partial_file = "wow-12340-94ee8476adb4ee065bfa9e73193d1496.mfil";
+    const char *client_partial_file = "wow-client-12340-8ccae76521675ea1479f44048a865f1e.mfil";
+
+    if (!has_master) {
+        LOG_INFO("PATCH", "Master manifest WoW.mfil not found locally. Attempting download from CDN...");
+        CURLResult res;
+        CURLOptions m_opts;
+        __init_options__(&m_opts, NULL);
+        m_opts.connect_timeout_seconds = 10;
+        CURLStatus st = __mfil_download_partial__(base_location, "WoW.mfil", "WoW.mfil", &m_opts, &res);
+        if (st == CURLDL_OK) {
+            has_master = __mfil_parse_master_file__("WoW.mfil", &master);
+        }
+    }
 
     if (has_master) {
         const char *loc = __mfil_get_master_location__(&master, "northrend");
         if (loc) base_location = loc;
         else if (master.server_count > 0) base_location = master.servers[0].location;
-        if (strlen(master.manifest_partial) > 0) partial_file = master.manifest_partial;
+
+        if (strlen(master.manifest_partial) > 0) data_partial_file = master.manifest_partial;
+        if (strlen(master.client_partial) > 0) client_partial_file = master.client_partial;
     }
 
-    char local_manifest_path[512];
-    snprintf(local_manifest_path, sizeof(local_manifest_path), "www/wow-pod-retail/US/12340.direct/%s", partial_file);
+    /* 2. Load and parse client manifest (client_partial) */
+    MfilManifest client_manifest;
+    memset(&client_manifest, 0, sizeof(client_manifest));
+    bool has_client_manifest = false;
 
-    MfilManifest manifest;
-    bool has_manifest = __mfil_parse_manifest_file__(local_manifest_path, &manifest);
-    if (!has_manifest) {
-        has_manifest = __mfil_parse_manifest_file__(partial_file, &manifest);
-    }
-
-    if (!has_manifest) {
-        CURLResult res;
-        CURLStatus st = __mfil_download_partial__(base_location, partial_file, partial_file, NULL, &res);
-        if (st == CURLDL_OK) {
-            has_manifest = __mfil_parse_manifest_file__(partial_file, &manifest);
+    if (client_partial_file && *client_partial_file) {
+        char local_client_path[512];
+        snprintf(local_client_path, sizeof(local_client_path), "www/wow-pod-retail/US/12340.direct/%s", client_partial_file);
+        has_client_manifest = __mfil_parse_manifest_file__(local_client_path, &client_manifest);
+        if (!has_client_manifest) {
+            has_client_manifest = __mfil_parse_manifest_file__(client_partial_file, &client_manifest);
+        }
+        if (!has_client_manifest) {
+            has_client_manifest = __mfil_parse_manifest_file__("data/wow-client.mfil", &client_manifest);
+        }
+        if (!has_client_manifest) {
+            LOG_INFO("PATCH", "Client manifest %s not cached locally. Downloading from CDN...", client_partial_file);
+            CURLResult res;
+            CURLOptions opts;
+            __init_options__(&opts, NULL);
+            opts.connect_timeout_seconds = 10;
+            CURLStatus st = __mfil_download_partial__(base_location, client_partial_file, client_partial_file, &opts, &res);
+            if (st == CURLDL_OK) {
+                has_client_manifest = __mfil_parse_manifest_file__(client_partial_file, &client_manifest);
+            }
         }
     }
 
-    if (!has_manifest) {
-        LOG_INFO("PATCH", "Manifest not found on CDN. Ready with local game archives.");
+    /* 3. Load and parse game data archives manifest (manifest_partial) */
+    MfilManifest data_manifest;
+    memset(&data_manifest, 0, sizeof(data_manifest));
+    bool has_data_manifest = false;
+
+    if (data_partial_file && *data_partial_file) {
+        char local_data_path[512];
+        snprintf(local_data_path, sizeof(local_data_path), "www/wow-pod-retail/US/12340.direct/%s", data_partial_file);
+        has_data_manifest = __mfil_parse_manifest_file__(local_data_path, &data_manifest);
+        if (!has_data_manifest) {
+            has_data_manifest = __mfil_parse_manifest_file__(data_partial_file, &data_manifest);
+        }
+        if (!has_data_manifest) {
+            has_data_manifest = __mfil_parse_manifest_file__("data/wow-data.mfil", &data_manifest);
+        }
+        if (!has_data_manifest) {
+            LOG_INFO("PATCH", "Data manifest %s not cached locally. Downloading from CDN...", data_partial_file);
+            CURLResult res;
+            CURLOptions opts;
+            __init_options__(&opts, NULL);
+            opts.connect_timeout_seconds = 10;
+            CURLStatus st = __mfil_download_partial__(base_location, data_partial_file, data_partial_file, &opts, &res);
+            if (st == CURLDL_OK) {
+                has_data_manifest = __mfil_parse_manifest_file__(data_partial_file, &data_manifest);
+            }
+        }
+    }
+
+    /* If neither manifest could be resolved */
+    if (!has_client_manifest && !has_data_manifest) {
+        LOG_INFO("PATCH", "Manifests not found on CDN or local cache. Using local game installation.");
         PatchProgressData *pd = g_new0(PatchProgressData, 1);
         pd->ctx = ctx;
         pd->fraction = 1.0;
@@ -529,75 +616,142 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
         return NULL;
     }
 
+    /* 4. Prepare manifest list for verification */
+    MfilManifest *manifest_list[2];
+    const char *manifest_labels[2];
+    size_t manifest_count = 0;
+
+    if (has_client_manifest) {
+        manifest_list[manifest_count] = &client_manifest;
+        manifest_labels[manifest_count] = "Client";
+        manifest_count++;
+    }
+    if (has_data_manifest) {
+        manifest_list[manifest_count] = &data_manifest;
+        manifest_labels[manifest_count] = "Game Data";
+        manifest_count++;
+    }
+
+    size_t total_files = 0;
+    for (size_t m = 0; m < manifest_count; m++) {
+        total_files += manifest_list[m]->file_count;
+    }
+
     size_t verified = 0;
     size_t downloaded = 0;
+    size_t redownloaded = 0;
+    size_t current_file_num = 0;
 
-    for (size_t i = 0; i < manifest.file_count; i++) {
-        if (ctx->patch_cancel) break;
+    for (size_t m_idx = 0; m_idx < manifest_count; m_idx++) {
+        MfilManifest *manifest = manifest_list[m_idx];
+        const char *m_label = manifest_labels[m_idx];
 
-        const MfilFile *file = &manifest.files[i];
+        for (size_t i = 0; i < manifest->file_count; i++) {
+            if (ctx->patch_cancel) break;
+            current_file_num++;
 
-        PatchProgressData *pd = g_new0(PatchProgressData, 1);
-        pd->ctx = ctx;
-        pd->fraction = (double)i / (double)manifest.file_count;
-        pd->status_text = g_strdup_printf("Verifying: %s (%zu/%zu)", file->name, i + 1, manifest.file_count);
-        pd->file_name = g_strdup(file->name);
-        g_idle_add(__patch_progress_idle_cb__, pd);
+            const MfilFile *file = &manifest->files[i];
 
-        bool is_game_exe = __is_game_client_file__(file->name);
+            PatchProgressData *pd = g_new0(PatchProgressData, 1);
+            pd->ctx = ctx;
+            pd->fraction = (total_files > 0) ? ((double)(current_file_num - 1) / (double)total_files) : 0.0;
+            pd->status_text = g_strdup_printf("Verifying [%s]: %s (%zu/%zu)", m_label, file->name, current_file_num, total_files);
+            pd->file_name = g_strdup(file->name);
+            g_idle_add(__patch_progress_idle_cb__, pd);
+
+            bool is_game_exe = __is_game_client_file__(file->name);
 #if defined(_WIN32)
-        if (is_game_exe && __is_client_patched__(file->name)) {
-            LOG_INFO("PATCH", "%s is already patched and verified. Skipping re-download.", file->name);
-            verified++;
-            continue;
-        }
-#endif
-
-        if (__mfil_verify_file_checksum__(file->name, file->checksum)) {
-#if defined(_WIN32)
-            if (is_game_exe) {
-                LOG_INFO("PATCH", "Preexisting %s matches MFIL unmodified checksum (%s). Applying binary patches...",
-                         file->name, file->checksum);
-                __check_and_patch_client__(file->name);
+            /* If the client executable is already patched with LAA + hook, do not overwrite */
+            if (is_game_exe && __is_client_patched__(file->name)) {
+                LOG_INFO("PATCH", "%s is already patched and verified. Preserving.", file->name);
+                verified++;
+                continue;
             }
 #endif
-            verified++;
-            continue;
-        }
 
-        /* File missing or corrupted -> download */
-        CURLOptions opts;
-        __init_options__(&opts, NULL);
-        opts.cancel_flag = &ctx->patch_cancel;
-        opts.resume = 1;
+            /* 1. Check if file already exists */
+            bool exists = __file_exists__(file->name);
+            bool corrupted = false;
 
-        PatchWorkerDlContext dc = {
-            .ctx = ctx,
-            .file_index = i,
-            .total_files = manifest.file_count,
-            .file_name = file->name
-        };
-        opts.on_progress = __on_patch_download_progress__;
-        opts.user_data = &dc;
+            if (exists) {
+                /* Check size if manifest defines expected size */
+                if (file->size > 0) {
+                    int64_t actual_size = __get_file_size__(file->name);
+                    if (actual_size >= 0 && actual_size != file->size) {
+                        LOG_WARN("PATCH", "File size mismatch for %s (expected %lld, found %lld) -> corrupted",
+                                 file->name, (long long)file->size, (long long)actual_size);
+                        corrupted = true;
+                    }
+                }
 
-        CURLResult dl_res;
-        CURLStatus dl_st = __mfil_download_file__(base_location, &manifest, file, NULL, &opts, &dl_res);
-        if (dl_st == CURLDL_OK || dl_st == CURLDL_ALREADY_COMPLETE) {
-            downloaded++;
-            verified++;
+                /* Check checksum if size matched */
+                if (!corrupted) {
+                    if (__mfil_verify_file_checksum__(file->name, file->checksum)) {
 #if defined(_WIN32)
-            if (is_game_exe) {
-                LOG_INFO("PATCH", "Downloaded %s matches MFIL checksum. Applying binary patches (LAA + DLL injection hook)...", file->name);
-                __check_and_patch_client__(file->name);
-            }
+                        if (is_game_exe) {
+                            LOG_INFO("PATCH", "Preexisting %s matches MFIL checksum (%s). Applying binary patches...",
+                                     file->name, file->checksum);
+                            __check_and_patch_client__(file->name);
+                        }
 #endif
+                        verified++;
+                        continue;
+                    } else {
+                        LOG_WARN("PATCH", "Checksum mismatch for %s -> corrupted", file->name);
+                        corrupted = true;
+                    }
+                }
+            } else {
+                LOG_INFO("PATCH", "File missing: %s", file->name);
+            }
+
+            /* 2. File missing or corrupted -> download or redownload */
+            LOG_INFO("PATCH", "%s %s: downloading from CDN...",
+                     corrupted ? "Corrupted file" : "Missing file", file->name);
+
+            CURLOptions opts;
+            __init_options__(&opts, NULL);
+            opts.cancel_flag = &ctx->patch_cancel;
+            /* If corrupted, overwrite from scratch; if missing, allow resume if partial exists */
+            opts.resume = corrupted ? 0 : 1;
+
+            PatchWorkerDlContext dc = {
+                .ctx = ctx,
+                .file_index = current_file_num - 1,
+                .total_files = total_files,
+                .file_name = file->name
+            };
+            opts.on_progress = __on_patch_download_progress__;
+            opts.user_data = &dc;
+
+            CURLResult dl_res;
+            CURLStatus dl_st = __mfil_download_file__(base_location, manifest, file, NULL, &opts, &dl_res);
+            if (dl_st == CURLDL_OK || dl_st == CURLDL_ALREADY_COMPLETE) {
+                if (corrupted) redownloaded++;
+                else downloaded++;
+                verified++;
+                LOG_INFO("PATCH", "Successfully %s %s", corrupted ? "redownloaded" : "downloaded", file->name);
+#if defined(_WIN32)
+                if (is_game_exe) {
+                    LOG_INFO("PATCH", "Downloaded %s matches MFIL checksum. Applying binary patches (LAA + DLL injection hook)...", file->name);
+                    __check_and_patch_client__(file->name);
+                }
+#endif
+            } else {
+                LOG_ERROR("PATCH", "Failed to download %s: %s", file->name, dl_res.error_message);
+            }
         }
     }
 
     PatchProgressData *done_pd = g_new0(PatchProgressData, 1);
     done_pd->ctx = ctx;
     done_pd->fraction = 1.0;
-    done_pd->status_text = g_strdup_printf("All %zu game archives verified. The Frozen Throne awaits!", verified);
+    if (downloaded > 0 || redownloaded > 0) {
+        done_pd->status_text = g_strdup_printf("Verification complete (%zu verified, %zu downloaded, %zu repaired). Ready to Play!",
+                                               verified, downloaded, redownloaded);
+    } else {
+        done_pd->status_text = g_strdup_printf("All %zu game files verified. The Frozen Throne awaits!", verified);
+    }
     done_pd->file_name = g_strdup("Ready");
     done_pd->finished = TRUE;
     g_idle_add(__patch_progress_idle_cb__, done_pd);
@@ -609,10 +763,12 @@ static gpointer __patch_worker_thread__(gpointer user_data) {
     }
 #endif
 
-    __mfil_free_manifest__(&manifest);
+    if (has_client_manifest) __mfil_free_manifest__(&client_manifest);
+    if (has_data_manifest) __mfil_free_manifest__(&data_manifest);
     if (has_master) __mfil_free_master__(&master);
 
-    LOG_INFO("PATCH", "Patch verification finished (%zu verified, %zu downloaded)", verified, downloaded);
+    LOG_INFO("PATCH", "Patch verification finished (%zu verified, %zu downloaded, %zu repaired)",
+             verified, downloaded, redownloaded);
     ctx->patch_running = 0;
     return NULL;
 }
