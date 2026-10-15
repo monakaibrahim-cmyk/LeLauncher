@@ -148,9 +148,10 @@ __install_dependencies__() {
         else
             echo -e "  Install the GTK 4 development stack using your distribution package manager."
         fi
+        RUNNER_USER=$(whoami)
         echo ""
-        echo -e "${CYAN}Alternatively, allow your runner user to run sudo without a password:${NC}"
-        echo -e "  ${BOLD}echo \"\$USER ALL=(ALL) NOPASSWD: ALL\" | sudo tee /etc/sudoers.d/\$USER${NC}"
+        echo -e "${CYAN}Alternatively, grant passwordless sudo to the runner user (${YELLOW}${RUNNER_USER}${CYAN}):${NC}"
+        echo -e "  ${BOLD}echo \"${RUNNER_USER} ALL=(ALL) NOPASSWD: ALL\" | sudo tee /etc/sudoers.d/${RUNNER_USER}${NC}"
         echo ""
         exit 1
     fi
