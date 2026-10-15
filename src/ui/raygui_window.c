@@ -5,9 +5,6 @@
     #ifndef NOGDI
         #define NOGDI
     #endif
-    #ifndef NOUSER
-        #define NOUSER
-    #endif
 #endif
 
 /* Include Raylib and Raygui FIRST to prevent Win32 GDI/User symbol collision */
@@ -19,6 +16,10 @@
 #if defined(_WIN32)
     #include <windows.h>
     #include <shellapi.h>
+
+    #ifndef SW_SHOWNORMAL
+        #define SW_SHOWNORMAL 1
+    #endif
 
     /* Undefine any Windows macro names that clash with Raylib */
     #ifdef Rectangle
