@@ -4,20 +4,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
-#if defined(USE_GTK4)
-    #include <glib.h>
-#else
-    #include <stdatomic.h>
-    #if defined(_WIN32)
-        #ifndef WIN32_LEAN_AND_MEAN
-            #define WIN32_LEAN_AND_MEAN
-        #endif
-        #include <windows.h>
-    #else
-        #include <pthread.h>
-        #include <unistd.h>
+#if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
     #endif
+    #include <windows.h>
+#else
+    #include <pthread.h>
+    #include <unistd.h>
 #endif
 
 struct LiveFeedClient {
@@ -26,11 +22,6 @@ struct LiveFeedClient {
     char                path[128];
     bool                use_ssl;
 
-#if defined(USE_GTK4)
-    gint                running;
-    GThread             *worker_thread;
-    GMutex              mutex;
-#else
     atomic_int          running;
 #if defined(_WIN32)
     HANDLE              worker_thread;
@@ -39,7 +30,6 @@ struct LiveFeedClient {
     pthread_t           worker_thread;
     pthread_mutex_t     mutex;
 #endif
-#endif
 
     LiveStatsCallback   callback;
     void                *user_data;
@@ -47,36 +37,6 @@ struct LiveFeedClient {
     LiveGameStats       current_stats;
 };
 
-#if defined(USE_GTK4)
-typedef struct {
-    LiveStatsCallback callback;
-    LiveGameStats     stats;
-    void              *user_data;
-} UiNotifyPayload;
-
-static gboolean __notify_ui_callback__(gpointer user_data) {
-    UiNotifyPayload *p = (UiNotifyPayload *)user_data;
-    if (p && p->callback) {
-        p->callback(&p->stats, p->user_data);
-    }
-    g_free(p);
-    return G_SOURCE_REMOVE;
-}
-
-static void __dispatch_stats_to_ui__(LiveFeedClient *client) {
-    if (!client || !client->callback) return;
-
-    UiNotifyPayload *p = g_new0(UiNotifyPayload, 1);
-    p->callback = client->callback;
-    p->user_data = client->user_data;
-
-    g_mutex_lock(&client->mutex);
-    p->stats = client->current_stats;
-    g_mutex_unlock(&client->mutex);
-
-    g_idle_add(__notify_ui_callback__, p);
-}
-#else
 static void __dispatch_stats_to_ui__(LiveFeedClient *client) {
     if (!client) return;
 
@@ -100,14 +60,11 @@ static void __dispatch_stats_to_ui__(LiveFeedClient *client) {
         cb(&st, ud);
     }
 }
-#endif
 
 void __live_feed_simulate_tick__(LiveFeedClient *client) {
     if (!client) return;
 
-#if defined(USE_GTK4)
-    g_mutex_lock(&client->mutex);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     EnterCriticalSection(&client->mutex);
 #else
     pthread_mutex_lock(&client->mutex);
@@ -130,9 +87,7 @@ void __live_feed_simulate_tick__(LiveFeedClient *client) {
     client->current_stats.latency_ms = (uint32_t)(18 + (rand() % 12));
     client->current_stats.status = REALM_ONLINE;
 
-#if defined(USE_GTK4)
-    g_mutex_unlock(&client->mutex);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     LeaveCriticalSection(&client->mutex);
 #else
     pthread_mutex_unlock(&client->mutex);
@@ -141,19 +96,7 @@ void __live_feed_simulate_tick__(LiveFeedClient *client) {
     __dispatch_stats_to_ui__(client);
 }
 
-#if defined(USE_GTK4)
-static gpointer __live_feed_worker__(gpointer data) {
-    LiveFeedClient *client = (LiveFeedClient *)data;
-    if (!client) return NULL;
-
-    while (g_atomic_int_get(&client->running)) {
-        __live_feed_simulate_tick__(client);
-        g_usleep(2 * G_USEC_PER_SEC);
-    }
-
-    return NULL;
-}
-#elif defined(_WIN32)
+#if defined(_WIN32)
 static DWORD WINAPI __live_feed_worker__(LPVOID data) {
     LiveFeedClient *client = (LiveFeedClient *)data;
     if (!client) return 0;
@@ -181,11 +124,7 @@ static void *__live_feed_worker__(void *data) {
 
 LiveFeedClient *__live_feed_create__(const char *host, int port, const char *path, bool use_ssl) {
     TRACE_SCOPE();
-#if defined(USE_GTK4)
-    LiveFeedClient *client = g_new0(LiveFeedClient, 1);
-#else
     LiveFeedClient *client = (LiveFeedClient *)calloc(1, sizeof(LiveFeedClient));
-#endif
     if (!client) return NULL;
 
     if (host) {
@@ -201,21 +140,19 @@ LiveFeedClient *__live_feed_create__(const char *host, int port, const char *pat
     }
     client->use_ssl = use_ssl;
 
-#if defined(USE_GTK4)
-    g_mutex_init(&client->mutex);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     InitializeCriticalSection(&client->mutex);
 #else
     pthread_mutex_init(&client->mutex, NULL);
 #endif
 
     client->current_stats.status = REALM_ONLINE;
-    strncpy(client->current_stats.realm_name, "Azeroth Prime", sizeof(client->current_stats.realm_name) - 1);
+    strncpy(client->current_stats.realm_name, "Northrend Realm", sizeof(client->current_stats.realm_name) - 1);
     client->current_stats.online_players = 1420;
     client->current_stats.ingame_players = 1180;
     client->current_stats.queue_count = 0;
     client->current_stats.latency_ms = 22;
-    strncpy(client->current_stats.motd, "Patch 1.0.0 live! Double XP weekend active.",
+    strncpy(client->current_stats.motd, "Wrath of the Lich King 3.3.5a - Northrend realm is online!",
             sizeof(client->current_stats.motd) - 1);
 
     return client;
@@ -224,9 +161,7 @@ LiveFeedClient *__live_feed_create__(const char *host, int port, const char *pat
 void __live_feed_set_callback__(LiveFeedClient *client, LiveStatsCallback callback, void *user_data) {
     if (!client) return;
 
-#if defined(USE_GTK4)
-    g_mutex_lock(&client->mutex);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     EnterCriticalSection(&client->mutex);
 #else
     pthread_mutex_lock(&client->mutex);
@@ -235,9 +170,7 @@ void __live_feed_set_callback__(LiveFeedClient *client, LiveStatsCallback callba
     client->callback = callback;
     client->user_data = user_data;
 
-#if defined(USE_GTK4)
-    g_mutex_unlock(&client->mutex);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     LeaveCriticalSection(&client->mutex);
 #else
     pthread_mutex_unlock(&client->mutex);
@@ -250,16 +183,6 @@ bool __live_feed_start__(LiveFeedClient *client) {
     TRACE_SCOPE();
     if (!client) return false;
 
-#if defined(USE_GTK4)
-    if (g_atomic_int_get(&client->running)) return false;
-    g_atomic_int_set(&client->running, 1);
-    client->worker_thread = g_thread_new("live_feed_worker", __live_feed_worker__, client);
-    if (!client->worker_thread) {
-        g_atomic_int_set(&client->running, 0);
-        return false;
-    }
-    return true;
-#else
     if (atomic_load(&client->running)) return false;
     atomic_store(&client->running, 1);
 
@@ -276,21 +199,12 @@ bool __live_feed_start__(LiveFeedClient *client) {
     }
 #endif
     return true;
-#endif
 }
 
 void __live_feed_stop__(LiveFeedClient *client) {
     TRACE_SCOPE();
     if (!client) return;
 
-#if defined(USE_GTK4)
-    if (!g_atomic_int_get(&client->running)) return;
-    g_atomic_int_set(&client->running, 0);
-    if (client->worker_thread) {
-        g_thread_join(client->worker_thread);
-        client->worker_thread = NULL;
-    }
-#else
     if (!atomic_load(&client->running)) return;
     atomic_store(&client->running, 0);
 
@@ -306,7 +220,6 @@ void __live_feed_stop__(LiveFeedClient *client) {
         client->worker_thread = 0;
     }
 #endif
-#endif
 }
 
 void __live_feed_destroy__(LiveFeedClient *client) {
@@ -315,10 +228,7 @@ void __live_feed_destroy__(LiveFeedClient *client) {
 
     __live_feed_stop__(client);
 
-#if defined(USE_GTK4)
-    g_mutex_clear(&client->mutex);
-    g_free(client);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     DeleteCriticalSection(&client->mutex);
     free(client);
 #else

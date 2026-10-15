@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 
 #if defined(_WIN32)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -22,15 +23,7 @@
     #include <strings.h>
     #include <sys/time.h>
     #include <sys/stat.h>
-#endif
-
-#if defined(USE_GTK4)
-    #include <glib.h>
-#else
-    #include <stdatomic.h>
-    #if !defined(_WIN32)
-        #include <pthread.h>
-    #endif
+    #include <pthread.h>
 #endif
 
 typedef struct {
@@ -42,39 +35,10 @@ typedef struct {
     char     message[1024];
 } LogEntry;
 
-#if defined(USE_GTK4)
-typedef struct {
-    LogUiCallback callback;
-    LogLevel      level;
-    char          system[32];
-    char          formatted[1280];
-    void          *user_data;
-} UiLogDispatch;
-#endif
-
 /* ==============================================================================
- * Platform Abstractions (GLib vs Native C23/POSIX/Win32)
+ * Platform Abstractions (Pure C23 / POSIX / Win32)
  * ============================================================================== */
-#if defined(USE_GTK4)
-    #define MUTEX_TYPE            GMutex
-    #define MUTEX_INIT(m)         g_mutex_init(m)
-    #define MUTEX_LOCK(m)         g_mutex_lock(m)
-    #define MUTEX_UNLOCK(m)       g_mutex_unlock(m)
-    #define MUTEX_CLEAR(m)        g_mutex_clear(m)
-
-    #define COND_TYPE             GCond
-    #define COND_INIT(c)          g_cond_init(c)
-    #define COND_WAIT(c, m)       g_cond_wait(c, m)
-    #define COND_SIGNAL(c)        g_cond_signal(c)
-    #define COND_CLEAR(c)         g_cond_clear(c)
-
-    #define ATOMIC_INT_TYPE       gint
-    #define ATOMIC_GET(v)         g_atomic_int_get(&(v))
-    #define ATOMIC_SET(v, val)    g_atomic_int_set(&(v), (val))
-
-    #define STRICMP(a, b)         g_ascii_strcasecmp((a), (b))
-    #define THREAD_USLEEP(us)     g_usleep(us)
-#elif defined(_WIN32)
+#if defined(_WIN32)
     #define MUTEX_TYPE            CRITICAL_SECTION
     #define MUTEX_INIT(m)         InitializeCriticalSection(m)
     #define MUTEX_LOCK(m)         EnterCriticalSection(m)
@@ -114,7 +78,6 @@ typedef struct {
     #define THREAD_USLEEP(us)     usleep(us)
 #endif
 
-#if !defined(USE_GTK4)
 typedef struct LogNode {
     LogEntry       *entry;
     struct LogNode *next;
@@ -167,7 +130,6 @@ static void __queue_free__(LogQueue *q) {
     }
     free(q);
 }
-#endif
 
 #if defined(DEBUG) || defined(_DEBUG) || !defined(NDEBUG)
 static ATOMIC_INT_TYPE g_current_level = (ATOMIC_INT_TYPE)LOG_LEVEL_TRACE;
@@ -178,17 +140,12 @@ static ATOMIC_INT_TYPE g_current_level = (ATOMIC_INT_TYPE)LOG_LEVEL_INFO;
 static char            g_log_file_path[512] = "Logs/LeLauncher.log";
 static FILE           *g_log_file = NULL;
 static MUTEX_TYPE      g_file_mutex;
-
-#if defined(USE_GTK4)
-static GQueue         *g_log_queue = NULL;
-static GThread        *g_worker_thread = NULL;
-#else
 static LogQueue       *g_log_queue = NULL;
+
 #if defined(_WIN32)
 static HANDLE          g_worker_thread = NULL;
 #else
 static pthread_t       g_worker_thread = 0;
-#endif
 #endif
 
 static MUTEX_TYPE      g_log_mutex;
@@ -199,15 +156,6 @@ static bool            g_shut_down = false;
 
 static void __ensure_parent_dir__(const char *filepath) {
     if (!filepath || filepath[0] == '\0') return;
-#if defined(USE_GTK4)
-    char *dir = g_path_get_dirname(filepath);
-    if (dir) {
-        if (strcmp(dir, ".") != 0 && strcmp(dir, "/") != 0) {
-            g_mkdir_with_parents(dir, 0755);
-        }
-        g_free(dir);
-    }
-#else
     char dir[512];
     strncpy(dir, filepath, sizeof(dir) - 1);
     dir[sizeof(dir) - 1] = '\0';
@@ -223,7 +171,6 @@ static void __ensure_parent_dir__(const char *filepath) {
     CreateDirectoryA(dir, NULL);
 #else
     mkdir(dir, 0755);
-#endif
 #endif
 }
 
@@ -332,20 +279,7 @@ static void __format_entry__(const LogEntry *e, char *out, size_t max_len) {
     }
 }
 
-#if defined(USE_GTK4)
-static gboolean __dispatch_ui_idle__(gpointer data) {
-    UiLogDispatch *d = (UiLogDispatch *)data;
-    if (d && d->callback) {
-        d->callback(d->level, d->system, d->formatted, d->user_data);
-    }
-    g_free(d);
-    return G_SOURCE_REMOVE;
-}
-#endif
-
-#if defined(USE_GTK4)
-static gpointer __logger_worker__(gpointer data)
-#elif defined(_WIN32)
+#if defined(_WIN32)
 static DWORD WINAPI __logger_worker__(LPVOID data)
 #else
 static void *__logger_worker__(void *data)
@@ -355,19 +289,6 @@ static void *__logger_worker__(void *data)
 
     while (true) {
         MUTEX_LOCK(&g_log_mutex);
-#if defined(USE_GTK4)
-        while (g_running && g_queue_is_empty(g_log_queue)) {
-            COND_WAIT(&g_log_cond, &g_log_mutex);
-        }
-        if (!g_running && g_queue_is_empty(g_log_queue)) {
-            MUTEX_UNLOCK(&g_log_mutex);
-            break;
-        }
-        GQueue local_queue = G_QUEUE_INIT;
-        while (!g_queue_is_empty(g_log_queue)) {
-            g_queue_push_tail(&local_queue, g_queue_pop_head(g_log_queue));
-        }
-#else
         while (g_running && __queue_is_empty__(g_log_queue)) {
             COND_WAIT(&g_log_cond, &g_log_mutex);
         }
@@ -379,18 +300,12 @@ static void *__logger_worker__(void *data)
         while (!__queue_is_empty__(g_log_queue)) {
             __queue_push_tail__(&local_queue, __queue_pop_head__(g_log_queue));
         }
-#endif
         MUTEX_UNLOCK(&g_log_mutex);
 
         LogEntry *entry = NULL;
         bool has_warn_or_error = false;
 
-#if defined(USE_GTK4)
-        while ((entry = (LogEntry *)g_queue_pop_head(&local_queue)) != NULL)
-#else
-        while ((entry = __queue_pop_head__(&local_queue)) != NULL)
-#endif
-        {
+        while ((entry = __queue_pop_head__(&local_queue)) != NULL) {
             const char *lvl_str = __level_to_string__(entry->level);
             const char *color   = __level_to_color__(entry->level);
             const char *reset   = "\033[0m";
@@ -446,30 +361,16 @@ static void *__logger_worker__(void *data)
             }
             MUTEX_UNLOCK(&g_file_mutex);
 
-            /* UI dispatch */
+            /* UI dispatch directly */
             MUTEX_LOCK(&g_ui_mutex);
             if (g_ui_callback) {
-#if defined(USE_GTK4)
-                UiLogDispatch *disp = g_new0(UiLogDispatch, 1);
-                disp->callback = g_ui_callback;
-                disp->level = entry->level;
-                strncpy(disp->system, entry->system, sizeof(disp->system) - 1);
-                __format_entry__(entry, disp->formatted, sizeof(disp->formatted));
-                disp->user_data = g_ui_user_data;
-                g_idle_add(__dispatch_ui_idle__, disp);
-#else
                 char formatted[1280];
                 __format_entry__(entry, formatted, sizeof(formatted));
                 g_ui_callback(entry->level, entry->system, formatted, g_ui_user_data);
-#endif
             }
             MUTEX_UNLOCK(&g_ui_mutex);
 
-#if defined(USE_GTK4)
-            g_free(entry);
-#else
             free(entry);
-#endif
         }
 
         /* Flush output streams once per batch if not already flushed by a warning */
@@ -483,7 +384,7 @@ static void *__logger_worker__(void *data)
         }
     }
 
-#if defined(USE_GTK4) || !defined(_WIN32)
+#if !defined(_WIN32)
     return NULL;
 #else
     return 0;
@@ -498,11 +399,7 @@ void __logger_init__(void) {
     MUTEX_INIT(&g_ui_mutex);
     MUTEX_INIT(&g_file_mutex);
 
-#if defined(USE_GTK4)
-    g_log_queue = g_queue_new();
-#else
     g_log_queue = __queue_new__();
-#endif
     g_running = true;
 
     const char *env_path = getenv("LELAUNCHER_LOG_FILE");
@@ -539,9 +436,7 @@ void __logger_init__(void) {
     __ensure_parent_dir__(g_log_file_path);
     g_log_file = fopen(g_log_file_path, "a");
 
-#if defined(USE_GTK4)
-    g_worker_thread = g_thread_new("logger_worker", __logger_worker__, NULL);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     g_worker_thread = CreateThread(NULL, 0, __logger_worker__, NULL, 0, NULL);
 #else
     pthread_create(&g_worker_thread, NULL, __logger_worker__, NULL);
@@ -563,12 +458,7 @@ void __logger_shutdown__(void) {
     COND_SIGNAL(&g_log_cond);
     MUTEX_UNLOCK(&g_log_mutex);
 
-#if defined(USE_GTK4)
-    if (g_worker_thread) {
-        g_thread_join(g_worker_thread);
-        g_worker_thread = NULL;
-    }
-#elif defined(_WIN32)
+#if defined(_WIN32)
     if (g_worker_thread) {
         WaitForSingleObject(g_worker_thread, INFINITE);
         CloseHandle(g_worker_thread);
@@ -590,15 +480,7 @@ void __logger_shutdown__(void) {
     MUTEX_UNLOCK(&g_file_mutex);
 
     if (g_log_queue) {
-#if defined(USE_GTK4)
-        LogEntry *entry = NULL;
-        while ((entry = (LogEntry *)g_queue_pop_head(g_log_queue)) != NULL) {
-            g_free(entry);
-        }
-        g_queue_free(g_log_queue);
-#else
         __queue_free__(g_log_queue);
-#endif
         g_log_queue = NULL;
     }
 
@@ -699,11 +581,7 @@ void __logger_log__(LogLevel level, const char *system, const char *file, int li
         return;
     }
 
-#if defined(USE_GTK4)
-    LogEntry *entry = g_new0(LogEntry, 1);
-#else
     LogEntry *entry = (LogEntry *)calloc(1, sizeof(LogEntry));
-#endif
     if (!entry) return;
 
     entry->level = level;
@@ -728,19 +606,11 @@ void __logger_log__(LogLevel level, const char *system, const char *file, int li
     va_end(args);
 
     MUTEX_LOCK(&g_log_mutex);
-#if defined(USE_GTK4)
-    if (g_queue_get_length(g_log_queue) > 2000) {
-        LogEntry *dropped = (LogEntry *)g_queue_pop_head(g_log_queue);
-        g_free(dropped);
-    }
-    g_queue_push_tail(g_log_queue, entry);
-#else
     if (g_log_queue->length > 2000) {
         LogEntry *dropped = __queue_pop_head__(g_log_queue);
         free(dropped);
     }
     __queue_push_tail__(g_log_queue, entry);
-#endif
     COND_SIGNAL(&g_log_cond);
     MUTEX_UNLOCK(&g_log_mutex);
 }
@@ -750,11 +620,7 @@ void __logger_flush__(void) {
 
     while (true) {
         MUTEX_LOCK(&g_log_mutex);
-#if defined(USE_GTK4)
-        bool empty = g_queue_is_empty(g_log_queue);
-#else
         bool empty = __queue_is_empty__(g_log_queue);
-#endif
         MUTEX_UNLOCK(&g_log_mutex);
 
         if (empty) break;

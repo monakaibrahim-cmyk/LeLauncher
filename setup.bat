@@ -2,11 +2,10 @@
 setlocal enabledelayedexpansion
 
 echo ===============================================================================
-echo  LeLauncher Automated Setup ^& Build for Windows
+echo  LeLauncher Automated Setup ^& Build for Windows (WotLK Edition)
 echo ===============================================================================
 
 set "BUILD_TYPE=Release"
-set "GUI_BACKEND=AUTO"
 set "DO_PACKAGE=0"
 set "DO_CLEAN=0"
 
@@ -15,15 +14,10 @@ for %%A in (%*) do (
     if /I "%%A"=="--release" set "BUILD_TYPE=Release"
     if /I "%%A"=="--clean" set "DO_CLEAN=1"
     if /I "%%A"=="--package" set "DO_PACKAGE=1"
-    if /I "%%A"=="--raygui" set "GUI_BACKEND=RAYGUI"
-    if /I "%%A"=="--gtk" set "GUI_BACKEND=GTK"
-    if /I "%%A"=="--gui=raygui" set "GUI_BACKEND=RAYGUI"
-    if /I "%%A"=="--gui=gtk" set "GUI_BACKEND=GTK"
-    if /I "%%A"=="--gui=auto" set "GUI_BACKEND=AUTO"
 )
 
 echo [INFO] Build Configuration: %BUILD_TYPE%
-echo [INFO] GUI Backend:         %GUI_BACKEND%
+echo [INFO] UI Engine:          Pure Raylib + Raygui (100% Self-Contained)
 
 if "%DO_CLEAN%"=="1" (
     if exist "build" (
@@ -32,21 +26,9 @@ if "%DO_CLEAN%"=="1" (
     )
 )
 
-REM If RAYGUI is explicitly requested, we can proceed directly if cmake is available
-if /I "%GUI_BACKEND%"=="RAYGUI" (
-    where cmake >nul 2>nul
-    if %ERRORLEVEL% EQU 0 goto :DO_BUILD
-)
-
-REM Check if pkg-config and gtk4 are already available in PATH
-where pkg-config >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    pkg-config --exists gtk4 >nul 2>nul
-    if %ERRORLEVEL% EQU 0 (
-        echo [INFO] GTK 4 development libraries detected in PATH.
-        goto :DO_BUILD
-    )
-)
+REM If cmake is available in PATH, build directly
+where cmake >nul 2>nul
+if %ERRORLEVEL% EQU 0 goto :DO_BUILD
 
 REM Check for standard MSYS2 installations
 set "MSYS2_ROOT="
@@ -55,18 +37,13 @@ if not defined MSYS2_ROOT if exist "C:\msys2\ucrt64.exe" set "MSYS2_ROOT=C:\msys
 
 if defined MSYS2_ROOT (
     echo [INFO] Detected MSYS2 at %MSYS2_ROOT%
-    if /I "%GUI_BACKEND%"=="GTK" (
-        echo [INFO] Ensuring GTK 4, toolchain, and build dependencies are installed...
-        "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gtk4"
-    ) else (
-        echo [INFO] Ensuring toolchain and build dependencies are installed...
-        "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja"
-    )
+    echo [INFO] Ensuring toolchain and build dependencies are installed...
+    "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja"
     
     echo [INFO] Configuring and building via MSYS2 UCRT64 environment...
     set "MSYSTEM=UCRT64"
     set "CHERE_INVOKING=enabled_from_arguments"
-    "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%CD%' && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DGUI_BACKEND=%GUI_BACKEND% && cmake --build build"
+    "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%CD%' && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE% && cmake --build build"
     if %ERRORLEVEL% EQU 0 (
         echo [SUCCESS] Build complete! Executable: build\LeLauncher.exe
         if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
@@ -77,35 +54,22 @@ if defined MSYS2_ROOT (
     )
 )
 
-REM If GTK not found and GUI_BACKEND is AUTO, fall back to RAYGUI if cmake is present
-if /I "%GUI_BACKEND%"=="AUTO" (
-    where cmake >nul 2>nul
-    if %ERRORLEVEL% EQU 0 (
-        echo [NOTE] GTK 4 not found. Falling back to self-contained Raygui backend...
-        set "GUI_BACKEND=RAYGUI"
-        goto :DO_BUILD
-    )
-)
-
 echo.
 echo ===============================================================================
-echo  Build Tools or GTK 4 Development Libraries Not Found on this PC!
+echo  Build Tools Not Found on this PC!
 echo ===============================================================================
-echo  To build with GTK 4:
+echo  To build LeLauncher on Windows:
 echo  1. Install MSYS2 from https://www.msys2.org/
 echo  2. Open 'MSYS2 UCRT64' terminal and run:
-echo       pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake ^
-echo                  mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-gtk4
-echo.
-echo  To build with self-contained Raygui (0 external GUI libraries):
-echo       setup.bat --raygui
+echo       pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+echo  3. Re-run: setup.bat
 echo ===============================================================================
 echo.
 exit /b 1
 
 :DO_BUILD
-echo [INFO] Configuring build with CMake (%BUILD_TYPE%, Backend: %GUI_BACKEND%)...
-cmake -B build -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DGUI_BACKEND=%GUI_BACKEND%
+echo [INFO] Configuring build with CMake (%BUILD_TYPE%)...
+cmake -B build -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] CMake configuration failed.
     exit /b 1

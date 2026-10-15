@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# LeLauncher Automated Bootstrap & Build Script
+# LeLauncher Automated Bootstrap & Build Script (WotLK Edition)
 #
-# Detects operating system, installs required GTK 4 development libraries,
-# configures CMake, and builds the launcher.
+# Detects operating system, ensures basic build tools are present,
+# configures CMake, and builds the pure Raylib/Raygui launcher.
 # ==============================================================================
 
 set -euo pipefail
@@ -19,7 +19,6 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 BUILD_TYPE="Release"
-GUI_BACKEND="AUTO"
 CLEAN_BUILD=0
 DEPS_ONLY=0
 PACKAGE_BUNDLE=0
@@ -29,13 +28,10 @@ __usage__() {
     echo -e "${BOLD}Usage:${NC} $0 [options]"
     echo ""
     echo "Options:"
-    echo "  --release          Build in Release configuration (default, optimized, file:line omitted)"
+    echo "  --release          Build in Release configuration (default, optimized)"
     echo "  --debug            Build in Debug configuration (with debug symbols & [file:line] logging)"
-    echo "  --gui=BACKEND      Specify GUI backend: 'auto' (default), 'raygui', or 'gtk'"
-    echo "  --raygui           Shortcut for --gui=raygui (self-contained, 0 debian packages required)"
-    echo "  --gtk              Shortcut for --gui=gtk (requires GTK 4 & glib-compile-resources)"
     echo "  --clean            Remove existing build directory before compiling"
-    echo "  --deps-only        Install required system dependencies without building"
+    echo "  --deps-only        Ensure basic build tools are installed without building"
     echo "  --package          Package built launcher and runtime assets into dist/ tarball"
     echo "  --run              Execute the launcher immediately after a successful build"
     echo "  -h, --help         Show this help message"
@@ -51,24 +47,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --release)
             BUILD_TYPE="Release"
-            shift
-            ;;
-        --gui=*)
-            GUI_BACKEND="${1#*=}"
-            GUI_BACKEND="$(echo "$GUI_BACKEND" | tr '[:lower:]' '[:upper:]')"
-            shift
-            ;;
-        --gui)
-            GUI_BACKEND="$2"
-            GUI_BACKEND="$(echo "$GUI_BACKEND" | tr '[:lower:]' '[:upper:]')"
-            shift 2
-            ;;
-        --raygui)
-            GUI_BACKEND="RAYGUI"
-            shift
-            ;;
-        --gtk)
-            GUI_BACKEND="GTK"
             shift
             ;;
         --clean)
@@ -99,9 +77,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo -e "${CYAN}${BOLD}=== LeLauncher Automated Setup & Build ===${NC}"
+echo -e "${CYAN}${BOLD}=== LeLauncher Automated Setup & Build (WotLK Edition) ===${NC}"
 echo -e "Target Configuration: ${YELLOW}${BUILD_TYPE}${NC}"
-echo -e "GUI Backend:          ${YELLOW}${GUI_BACKEND}${NC}"
+echo -e "UI Engine:            ${CYAN}Pure Raylib + Raygui (100% Self-Contained)${NC}"
 
 # Check for root/sudo elevation helper
 SUDO=""
@@ -118,29 +96,12 @@ elif command -v sudo >/dev/null 2>&1; then
     fi
 fi
 
-# Detect missing critical tools or headers
+# Detect missing critical tools (Zero GUI packages required)
 __get_missing_dependencies__() {
     local missing=()
     if ! command -v cmake >/dev/null 2>&1; then missing+=("cmake"); fi
     if ! command -v git >/dev/null 2>&1; then missing+=("git"); fi
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then missing+=("build-essential (gcc/clang)"); fi
-
-    if [[ "$GUI_BACKEND" == "GTK" ]]; then
-        if ! command -v pkg-config >/dev/null 2>&1 && ! command -v pkgconf >/dev/null 2>&1; then missing+=("pkg-config"); fi
-        if ! command -v glib-compile-resources >/dev/null 2>&1; then missing+=("glib-compile-resources (libglib2.0-dev-bin)"); fi
-        if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then missing+=("gtk4 (libgtk-4-dev)"); fi
-    elif [[ "$GUI_BACKEND" == "AUTO" ]]; then
-        local gtk_missing=0
-        if ! command -v glib-compile-resources >/dev/null 2>&1; then gtk_missing=1; fi
-        if ! pkg-config --exists gtk4 2>/dev/null && ! pkgconf --exists gtk4 2>/dev/null; then gtk_missing=1; fi
-        if [[ $gtk_missing -eq 1 ]]; then
-            if [[ $CAN_SUDO_NONINTERACTIVE -eq 0 ]] && ! [ -t 0 ]; then
-                echo -e "${YELLOW}[NOTE] GTK 4 is not installed and non-interactive sudo elevation is unavailable in CI.${NC}"
-                echo -e "${GREEN}[NOTE] Automatically selecting self-contained Raygui backend (0 debian packages required)!${NC}"
-                GUI_BACKEND="RAYGUI"
-            fi
-        fi
-    fi
     echo "${missing[*]}"
 }
 
@@ -150,7 +111,7 @@ __needs_dependencies__() {
     [[ -n "$missing" ]]
 }
 
-# Detect distribution and install dependencies
+# Detect distribution and install essential build tools if missing
 __install_dependencies__() {
     echo -e "${CYAN}Detecting system package manager...${NC}"
 
@@ -165,28 +126,27 @@ __install_dependencies__() {
 
     echo -e "Detected platform: ${BOLD}${DISTRO_ID}${NC}"
 
-    # Check if sudo elevation is missing in a non-interactive shell (such as GitHub Actions self-hosted runner)
     if [[ $CAN_SUDO_NONINTERACTIVE -eq 0 ]] && ! [ -t 0 ]; then
         local missing_pkgs
         missing_pkgs=$(__get_missing_dependencies__)
         echo ""
         echo -e "${RED}${BOLD}===============================================================================${NC}"
-        echo -e "${RED}${BOLD}  Error: Missing required build dependencies:${NC} ${YELLOW}${missing_pkgs}${NC}"
+        echo -e "${RED}${BOLD}  Error: Missing required basic tools:${NC} ${YELLOW}${missing_pkgs}${NC}"
         echo -e "${RED}${BOLD}  'sudo' requires an interactive password, which cannot be prompted in CI.${NC}"
         echo -e "${RED}${BOLD}===============================================================================${NC}"
         echo ""
         echo -e "${CYAN}To fix this, please run this one-time command on your VPS terminal:${NC}"
         echo ""
         if [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop) ]] || [[ "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
-            echo -e "  ${BOLD}sudo apt-get update && sudo apt-get install -y build-essential cmake git pkg-config libgtk-4-dev libglib2.0-dev-bin${NC}"
+            echo -e "  ${BOLD}sudo apt-get update && sudo apt-get install -y build-essential cmake git${NC}"
         elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma) ]] || [[ "$DISTRO_LIKE" =~ (fedora|rhel) ]]; then
-            echo -e "  ${BOLD}sudo dnf install -y gcc gcc-c++ make cmake git pkgconf-pkg-config gtk4-devel glib2-devel${NC}"
+            echo -e "  ${BOLD}sudo dnf install -y gcc gcc-c++ make cmake git${NC}"
         elif [[ "$DISTRO_ID" =~ (arch|manjaro|endeavouros) ]] || [[ "$DISTRO_LIKE" =~ arch ]]; then
-            echo -e "  ${BOLD}sudo pacman -S --needed --noconfirm base-devel cmake git pkgconf gtk4 glib2-devel${NC}"
+            echo -e "  ${BOLD}sudo pacman -S --needed --noconfirm base-devel cmake git${NC}"
         else
-            echo -e "  Install the GTK 4 development stack using your distribution package manager."
+            echo -e "  Install cmake, git, and a C compiler using your distribution package manager."
         fi
-        RUNNER_USER=$(whoami)
+        RUNNER_USER=$(whoami 2>/dev/null || echo "$USER")
         echo ""
         echo -e "${CYAN}Alternatively, grant passwordless sudo to the runner user (${YELLOW}${RUNNER_USER}${CYAN}):${NC}"
         echo -e "  ${BOLD}echo \"${RUNNER_USER} ALL=(ALL) NOPASSWD: ALL\" | sudo tee /etc/sudoers.d/${RUNNER_USER}${NC}"
@@ -195,81 +155,38 @@ __install_dependencies__() {
     fi
 
     if [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop) ]] || [[ "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
-        echo -e "${CYAN}Installing GTK 4, GLib tools, and build essentials via apt...${NC}"
+        echo -e "${CYAN}Installing build essentials via apt...${NC}"
         $SUDO apt-get update -y
-        $SUDO apt-get install -y \
-            build-essential \
-            cmake \
-            git \
-            pkg-config \
-            libgtk-4-dev \
-            libglib2.0-dev-bin
+        $SUDO apt-get install -y build-essential cmake git
     elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma) ]] || [[ "$DISTRO_LIKE" =~ (fedora|rhel) ]]; then
-        echo -e "${CYAN}Installing GTK 4 and build essentials via dnf...${NC}"
-        $SUDO dnf install -y \
-            gcc \
-            gcc-c++ \
-            make \
-            cmake \
-            git \
-            pkgconf-pkg-config \
-            gtk4-devel \
-            glib2-devel
+        echo -e "${CYAN}Installing build essentials via dnf...${NC}"
+        $SUDO dnf install -y gcc gcc-c++ make cmake git
     elif [[ "$DISTRO_ID" =~ (arch|manjaro|endeavouros) ]] || [[ "$DISTRO_LIKE" =~ arch ]]; then
-        echo -e "${CYAN}Installing GTK 4 and build essentials via pacman...${NC}"
-        $SUDO pacman -S --needed --noconfirm \
-            base-devel \
-            cmake \
-            git \
-            pkgconf \
-            gtk4 \
-            glib2-devel
+        echo -e "${CYAN}Installing build essentials via pacman...${NC}"
+        $SUDO pacman -S --needed --noconfirm base-devel cmake git
     elif [[ "$DISTRO_ID" =~ (opensuse|sles) ]] || [[ "$DISTRO_LIKE" =~ suse ]]; then
-        echo -e "${CYAN}Installing GTK 4 and build essentials via zypper...${NC}"
-        $SUDO zypper install -y \
-            gcc \
-            gcc-c++ \
-            make \
-            cmake \
-            git \
-            pkg-config \
-            gtk4-devel \
-            glib2-devel
+        echo -e "${CYAN}Installing build essentials via zypper...${NC}"
+        $SUDO zypper install -y gcc gcc-c++ make cmake git
     elif [[ "$DISTRO_ID" == "alpine" ]]; then
-        echo -e "${CYAN}Installing GTK 4 and build essentials via apk...${NC}"
-        $SUDO apk add \
-            build-base \
-            cmake \
-            git \
-            pkgconf \
-            gtk4.0-dev \
-            glib-dev
+        echo -e "${CYAN}Installing build essentials via apk...${NC}"
+        $SUDO apk add build-base cmake git
     elif [[ "${OSTYPE:-}" == "msys" ]] || [[ "${MSYSTEM:-}" =~ UCRT64|MINGW64 ]]; then
-        echo -e "${CYAN}Installing GTK 4 and toolchain via MSYS2 pacman...${NC}"
-        pacman -S --needed --noconfirm \
-            mingw-w64-ucrt-x86_64-gcc \
-            mingw-w64-ucrt-x86_64-cmake \
-            mingw-w64-ucrt-x86_64-ninja \
-            mingw-w64-ucrt-x86_64-pkgconf \
-            mingw-w64-ucrt-x86_64-gtk4
-    else
-        echo -e "${RED}Unsupported or unrecognized Linux distribution: ${DISTRO_ID}${NC}"
-        echo -e "Please install GTK 4 development headers (libgtk-4-dev) and glib-compile-resources manually."
-        exit 1
+        echo -e "${CYAN}Installing toolchain via MSYS2 pacman...${NC}"
+        pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
     fi
 
-    echo -e "${GREEN}✓ Dependencies verified and installed.${NC}"
+    echo -e "${GREEN}✓ Basic toolchain verified and installed.${NC}"
 }
 
-# Check and install dependencies if needed
+# Check and install tools if needed
 if __needs_dependencies__ || [[ $DEPS_ONLY -eq 1 ]]; then
     __install_dependencies__
 else
-    echo -e "${GREEN}✓ All required build tools and libraries are already present.${NC}"
+    echo -e "${GREEN}✓ All required build tools are already present.${NC}"
 fi
 
 if [[ $DEPS_ONLY -eq 1 ]]; then
-    echo -e "${GREEN}Dependencies installed successfully. Exiting as requested (--deps-only).${NC}"
+    echo -e "${GREEN}Dependencies checked successfully. Exiting as requested (--deps-only).${NC}"
     exit 0
 fi
 
@@ -282,10 +199,9 @@ fi
 # Determine optimal parallel jobs
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-echo -e "${CYAN}Configuring build with CMake (${BUILD_TYPE}, Backend: ${GUI_BACKEND})...${NC}"
+echo -e "${CYAN}Configuring build with CMake (${BUILD_TYPE})...${NC}"
 cmake -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DGUI_BACKEND="$GUI_BACKEND" \
     -S "$SCRIPT_DIR"
 
 echo -e "${CYAN}Compiling LeLauncher using ${CPU_CORES} parallel cores...${NC}"
