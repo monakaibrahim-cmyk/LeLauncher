@@ -26,34 +26,96 @@ if "%DO_CLEAN%"=="1" (
     )
 )
 
-REM 1. Check for active MSVC in PATH
-where cl >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    echo [INFO] Detected active MSVC toolchain in PATH.
-    goto :DO_MSVC_BUILD
+REM -----------------------------------------------------------------------------
+REM 1. Locate vswhere.exe across standard 32-bit, 64-bit, and PATH locations
+REM -----------------------------------------------------------------------------
+set "VSWHERE="
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+) else if exist "%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" (
+    set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+) else (
+    for /f "usebackq tokens=*" %%P in (`where vswhere.exe 2^>nul`) do set "VSWHERE=%%P"
 )
 
-REM 2. Discover Visual Studio installation via vswhere
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-if exist "%VSWHERE%" (
-    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+REM -----------------------------------------------------------------------------
+REM 2. Discover Visual Studio & MSVC Toolchain
+REM -----------------------------------------------------------------------------
+set "MSVC_ACTIVE=0"
+where cl >nul 2>nul
+if %ERRORLEVEL% EQU 0 set "MSVC_ACTIVE=1"
+
+set "VS_DIR="
+set "VS_MAJOR="
+set "VS_DIR_NO_VC="
+
+if defined VSWHERE (
+    REM Search all product editions (including BuildTools) for VC Tools x86/x64
+    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
         set "VS_DIR=%%i"
     )
-    if defined VS_DIR (
-        if exist "!VS_DIR!\VC\Auxiliary\Build\vcvars64.bat" (
-            echo [INFO] Detected Visual Studio at !VS_DIR!
-            echo [INFO] Initializing MSVC x64 developer environment...
-            call "!VS_DIR!\VC\Auxiliary\Build\vcvars64.bat"
-            goto :DO_MSVC_BUILD
+    for /f "usebackq tokens=1 delims=." %%v in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion`) do (
+        set "VS_MAJOR=%%v"
+    )
+
+    REM If not found with VC tools requirement, check if VS is installed at all
+    if not defined VS_DIR (
+        for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do (
+            set "VS_DIR_NO_VC=%%i"
+        )
+        if defined VS_DIR_NO_VC (
+            if exist "!VS_DIR_NO_VC!\VC\Auxiliary\Build\vcvars64.bat" (
+                set "VS_DIR=!VS_DIR_NO_VC!"
+            )
+            for /f "usebackq tokens=1 delims=." %%v in (`"%VSWHERE%" -latest -products * -property installationVersion`) do (
+                set "VS_MAJOR=%%v"
+            )
         )
     )
 )
 
-REM 3. If cmake is available in PATH, build directly
-where cmake >nul 2>nul
-if %ERRORLEVEL% EQU 0 goto :DO_BUILD
+REM If MSVC is not active in current session, try initializing via vcvars64.bat
+if "%MSVC_ACTIVE%"=="0" if defined VS_DIR (
+    if exist "!VS_DIR!\VC\Auxiliary\Build\vcvars64.bat" (
+        echo [INFO] Detected Visual Studio at !VS_DIR!
+        set "VCPKG_VISUAL_STUDIO_PATH=!VS_DIR!"
+        echo [INFO] Initializing MSVC x64 developer environment...
+        call "!VS_DIR!\VC\Auxiliary\Build\vcvars64.bat"
+        where cl >nul 2>nul
+        if !ERRORLEVEL! EQU 0 set "MSVC_ACTIVE=1"
+    )
+)
 
-REM 4. Check for standard MSYS2 installations as fallback
+REM If MSVC is now active, proceed to MSVC build
+if "%MSVC_ACTIVE%"=="1" (
+    if not defined VCPKG_VISUAL_STUDIO_PATH if defined VS_DIR set "VCPKG_VISUAL_STUDIO_PATH=!VS_DIR!"
+    if not defined VCPKG_VISUAL_STUDIO_PATH if defined VSINSTALLDIR set "VCPKG_VISUAL_STUDIO_PATH=%VSINSTALLDIR%"
+    goto :DO_MSVC_BUILD
+)
+
+REM -----------------------------------------------------------------------------
+REM 3. If Visual Studio is present but lacks C++ workload, explain how to fix
+REM -----------------------------------------------------------------------------
+if defined VS_DIR_NO_VC (
+    echo.
+    echo ===============================================================================
+    echo  [WARNING] Visual Studio Found, but C++ Toolchain is Missing!
+    echo ===============================================================================
+    echo  Installation path: !VS_DIR_NO_VC!
+    echo  The C++ compiler tools (vcvars64.bat) were not found in this installation.
+    echo.
+    echo  To fix this:
+    echo   1. Launch 'Visual Studio Installer' from your Windows Start Menu.
+    echo   2. Click 'Modify' on your Visual Studio or Build Tools installation.
+    echo   3. Under 'Workloads', check 'Desktop development with C++'.
+    echo   4. Click 'Modify' in the lower-right corner to install.
+    echo ===============================================================================
+    echo.
+)
+
+REM -----------------------------------------------------------------------------
+REM 4. Fallback: Check for standard MSYS2 installations
+REM -----------------------------------------------------------------------------
 set "MSYS2_ROOT="
 if exist "C:\msys64\ucrt64.exe" set "MSYS2_ROOT=C:\msys64"
 if not defined MSYS2_ROOT if exist "C:\msys2\ucrt64.exe" set "MSYS2_ROOT=C:\msys2"
@@ -67,7 +129,7 @@ if defined MSYS2_ROOT (
     set "MSYSTEM=UCRT64"
     set "CHERE_INVOKING=enabled_from_arguments"
     "%MSYS2_ROOT%\usr\bin\bash.exe" -lc "cd '%CD%' && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE% && cmake --build build"
-    if %ERRORLEVEL% EQU 0 (
+    if !ERRORLEVEL! EQU 0 (
         echo [SUCCESS] Build complete! Executable: build\LeLauncher.exe
         if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
         exit /b 0
@@ -77,11 +139,39 @@ if defined MSYS2_ROOT (
     )
 )
 
+REM -----------------------------------------------------------------------------
+REM 5. Fallback: If cmake and gcc/clang are in PATH, try general build
+REM -----------------------------------------------------------------------------
+where cmake >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+    set "HAS_CC=0"
+    where gcc >nul 2>nul
+    if !ERRORLEVEL! EQU 0 set "HAS_CC=1"
+    where clang >nul 2>nul
+    if !ERRORLEVEL! EQU 0 set "HAS_CC=1"
+
+    if "!HAS_CC!"=="1" goto :DO_BUILD
+)
+
+REM -----------------------------------------------------------------------------
+REM 6. No suitable build environment found - Guide the user
+REM -----------------------------------------------------------------------------
 echo.
 echo ===============================================================================
 echo  Build Tools Not Found on this PC!
 echo ===============================================================================
-echo Please install Visual Studio 2022 (with Desktop Development with C++) or MSYS2.
+echo Visual Studio or MSYS2 is required to compile LeLauncher on Windows.
+echo.
+echo Option 1 (Recommended - MSVC):
+echo   1. Download and run Visual Studio Installer from:
+echo      https://visualstudio.microsoft.com/downloads/
+echo   2. Select 'Desktop development with C++' workload.
+echo   3. Re-run setup.bat.
+echo.
+echo Option 2 (MSYS2 UCRT64):
+echo   1. Install MSYS2 to C:\msys64 from https://www.msys2.org/
+echo   2. Re-run setup.bat (it will automatically install GTK4 and GCC).
+echo ===============================================================================
 exit /b 1
 
 :DO_MSVC_BUILD
@@ -92,14 +182,73 @@ if not defined VCPKG_CMAKE if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\
 if not defined VCPKG_CMAKE if defined VCPKG_INSTALLATION_ROOT if exist "%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake"
 if not defined VCPKG_CMAKE if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake"
 
+REM Determine optimal CMake generator based on detected Visual Studio version
+set "CMAKE_GEN="
+set "IS_MULTI_CONFIG=1"
+
+REM Check VS_MAJOR if discovered via vswhere
+if defined VS_MAJOR (
+    if "!VS_MAJOR!"=="17" set "CMAKE_GEN=-G ""Visual Studio 17 2022"" -A x64"
+    if "!VS_MAJOR!"=="16" set "CMAKE_GEN=-G ""Visual Studio 16 2019"" -A x64"
+    if "!VS_MAJOR!"=="15" set "CMAKE_GEN=-G ""Visual Studio 15 2017"" -A x64"
+)
+
+REM If not resolved, check VisualStudioVersion environment variable
+if not defined CMAKE_GEN if defined VisualStudioVersion (
+    if "%VisualStudioVersion:~0,2%"=="17" set "CMAKE_GEN=-G ""Visual Studio 17 2022"" -A x64"
+    if "%VisualStudioVersion:~0,2%"=="16" set "CMAKE_GEN=-G ""Visual Studio 16 2019"" -A x64"
+    if "%VisualStudioVersion:~0,2%"=="15" set "CMAKE_GEN=-G ""Visual Studio 15 2017"" -A x64"
+)
+
+REM If still not resolved and ninja is available, use Ninja
+if not defined CMAKE_GEN (
+    where ninja >nul 2>nul
+    if !ERRORLEVEL! EQU 0 (
+        set "CMAKE_GEN=-G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE%"
+        set "IS_MULTI_CONFIG=0"
+    )
+)
+
+REM Default to Visual Studio 17 2022 if still unset
+if not defined CMAKE_GEN set "CMAKE_GEN=-G ""Visual Studio 17 2022"" -A x64"
+
+echo [INFO] Selected CMake Generator: !CMAKE_GEN!
+
+REM Run CMake configuration
 if defined VCPKG_CMAKE (
     echo [INFO] Using vcpkg toolchain: !VCPKG_CMAKE!
-    cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="!VCPKG_CMAKE!"
+    cmake -B build !CMAKE_GEN! -DCMAKE_TOOLCHAIN_FILE="!VCPKG_CMAKE!"
 ) else (
-    cmake -B build -G "Visual Studio 17 2022" -A x64
+    cmake -B build !CMAKE_GEN!
 )
-cmake --build build --config %BUILD_TYPE%
-if %ERRORLEVEL% EQU 0 (
+
+REM If Visual Studio generator failed with 'could not find any instance', attempt Ninja fallback
+if !ERRORLEVEL! NEQ 0 (
+    where ninja >nul 2>nul
+    if !ERRORLEVEL! EQU 0 (
+        echo [WARN] Visual Studio generator failed. Retrying configuration with Ninja...
+        set "IS_MULTI_CONFIG=0"
+        if defined VCPKG_CMAKE (
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_TOOLCHAIN_FILE="!VCPKG_CMAKE!"
+        ) else (
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+        )
+    )
+)
+
+if !ERRORLEVEL! NEQ 0 (
+    echo [ERROR] CMake configuration failed.
+    exit /b 1
+)
+
+echo [INFO] Compiling LeLauncher with MSVC (%BUILD_TYPE%)...
+if "!IS_MULTI_CONFIG!"=="1" (
+    cmake --build build --config %BUILD_TYPE% --parallel
+) else (
+    cmake --build build --parallel
+)
+
+if !ERRORLEVEL! EQU 0 (
     echo [SUCCESS] Build complete with MSVC!
     if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
     exit /b 0
@@ -111,8 +260,8 @@ if %ERRORLEVEL% EQU 0 (
 :DO_BUILD
 echo [INFO] Configuring build with CMake...
 cmake -B build -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
-cmake --build build --config %BUILD_TYPE%
-if %ERRORLEVEL% EQU 0 (
+cmake --build build --config %BUILD_TYPE% --parallel
+if !ERRORLEVEL! EQU 0 (
     echo [SUCCESS] Build complete!
     if "%DO_PACKAGE%"=="1" call :PACKAGE_BUNDLE
     exit /b 0

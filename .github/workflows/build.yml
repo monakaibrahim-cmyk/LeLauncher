@@ -84,6 +84,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite;files,$cacheDir,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($env:VSINSTALLDIR) {
+            "VCPKG_VISUAL_STUDIO_PATH=$env:VSINSTALLDIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
 
       - name: Cache vcpkg Binary Artifacts (Filesystem Fallback)
         uses: actions/cache@v4
@@ -97,6 +100,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          if ($env:VSINSTALLDIR -and -not $env:VCPKG_VISUAL_STUDIO_PATH) {
+            $env:VCPKG_VISUAL_STUDIO_PATH = $env:VSINSTALLDIR
+          }
           & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install --triplet x64-windows
 
       - name: Configure LeLauncher with CMake (MSVC)
