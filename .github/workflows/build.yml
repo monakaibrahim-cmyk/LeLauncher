@@ -85,7 +85,8 @@ jobs:
           "VCPKG_DEFAULT_BINARY_CACHE=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite;files,$cacheDir,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           if ($env:VSINSTALLDIR) {
-            "VCPKG_VISUAL_STUDIO_PATH=$env:VSINSTALLDIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            $vsClean = $env:VSINSTALLDIR.TrimEnd('\').TrimEnd('/')
+            "VCPKG_VISUAL_STUDIO_PATH=$vsClean" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
 
       - name: Cache vcpkg Binary Artifacts (Filesystem Fallback)
@@ -100,19 +101,41 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          if ($env:VSINSTALLDIR -and -not $env:VCPKG_VISUAL_STUDIO_PATH) {
-            $env:VCPKG_VISUAL_STUDIO_PATH = $env:VSINSTALLDIR
+          if ($env:VSINSTALLDIR) {
+            $env:VCPKG_VISUAL_STUDIO_PATH = $env:VSINSTALLDIR.TrimEnd('\').TrimEnd('/')
           }
           & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install --triplet x64-windows
+
+      - name: Add vcpkg Tools to PATH
+        shell: pwsh
+        run: |
+          $toolDirs = @(
+            (Join-Path $PWD "vcpkg_installed\x64-windows\tools\pkgconf"),
+            (Join-Path $PWD "vcpkg_installed\x64-windows\tools\glib"),
+            (Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\tools\pkgconf"),
+            (Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\tools\glib")
+          )
+          foreach ($dir in $toolDirs) {
+            if (Test-Path $dir) {
+              Write-Host "Adding tool directory to PATH: $dir"
+              $dir | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
 
       - name: Configure LeLauncher with CMake (MSVC)
         shell: pwsh
         run: |
           $BUILD_CFG = "${{ inputs.build_type || 'Release' }}"
+          $pkgconfExe = Join-Path $PWD "vcpkg_installed\x64-windows\tools\pkgconf\pkgconf.exe"
+          $extraArgs = @()
+          if (Test-Path $pkgconfExe) {
+            $extraArgs += "-DPKG_CONFIG_EXECUTABLE=$pkgconfExe"
+          }
           cmake -B build `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_BUILD_TYPE=$BUILD_CFG
+            -DCMAKE_BUILD_TYPE=$BUILD_CFG `
+            @extraArgs
 
       - name: Compile LeLauncher with MSVC
         shell: pwsh

@@ -90,6 +90,10 @@ REM If MSVC is now active, proceed to MSVC build
 if "%MSVC_ACTIVE%"=="1" (
     if not defined VCPKG_VISUAL_STUDIO_PATH if defined VS_DIR set "VCPKG_VISUAL_STUDIO_PATH=!VS_DIR!"
     if not defined VCPKG_VISUAL_STUDIO_PATH if defined VSINSTALLDIR set "VCPKG_VISUAL_STUDIO_PATH=%VSINSTALLDIR%"
+    if defined VCPKG_VISUAL_STUDIO_PATH (
+        if "!VCPKG_VISUAL_STUDIO_PATH:~-1!"=="\" set "VCPKG_VISUAL_STUDIO_PATH=!VCPKG_VISUAL_STUDIO_PATH:~0,-1!"
+        if "!VCPKG_VISUAL_STUDIO_PATH:~-1!"=="/" set "VCPKG_VISUAL_STUDIO_PATH=!VCPKG_VISUAL_STUDIO_PATH:~0,-1!"
+    )
     goto :DO_MSVC_BUILD
 )
 
@@ -181,6 +185,14 @@ if exist "vcpkg\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=vcpkg\scripts
 if not defined VCPKG_CMAKE if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
 if not defined VCPKG_CMAKE if defined VCPKG_INSTALLATION_ROOT if exist "%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake"
 if not defined VCPKG_CMAKE if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" set "VCPKG_CMAKE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake"
+
+REM Ensure vcpkg tools (pkgconf, glib) are discoverable in PATH
+if exist "vcpkg_installed\x64-windows\tools\pkgconf" set "PATH=%CD%\vcpkg_installed\x64-windows\tools\pkgconf;!PATH!"
+if exist "vcpkg_installed\x64-windows\tools\glib" set "PATH=%CD%\vcpkg_installed\x64-windows\tools\glib;!PATH!"
+if defined VCPKG_INSTALLATION_ROOT (
+    if exist "%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\tools\pkgconf" set "PATH=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\tools\pkgconf;!PATH!"
+    if exist "%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\tools\glib" set "PATH=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\tools\glib;!PATH!"
+)
 
 REM Determine optimal CMake generator based on detected Visual Studio version
 set "CMAKE_GEN="

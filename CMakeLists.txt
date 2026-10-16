@@ -19,23 +19,71 @@ endif()
 # ==============================================================================
 # GTK 4 and GLib Tooling Discovery
 # ==============================================================================
-if (DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
-    set(ENV{PKG_CONFIG_PATH} "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/pkgconfig;${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/pkgconfig;$ENV{PKG_CONFIG_PATH}")
-elseif (DEFINED ENV{VCPKG_ROOT} AND WIN32)
-    set(ENV{PKG_CONFIG_PATH} "$ENV{VCPKG_ROOT}/installed/x64-windows/lib/pkgconfig;$ENV{VCPKG_ROOT}/installed/x64-windows/share/pkgconfig;$ENV{PKG_CONFIG_PATH}")
+if (NOT PKG_CONFIG_EXECUTABLE)
+    find_program(PKG_CONFIG_EXECUTABLE
+        NAMES pkgconf pkg-config
+        HINTS
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows/tools/pkgconf"
+            "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/tools/pkgconf"
+            "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/pkgconf"
+            "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/pkgconf"
+            "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/tools/pkgconf"
+    )
 endif()
+
+set(VCPKG_PC_HINTS
+    "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows/lib/pkgconfig"
+    "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows/share/pkgconfig"
+    "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/lib/pkgconfig"
+    "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/share/pkgconfig"
+)
+if (DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    list(APPEND VCPKG_PC_HINTS
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/pkgconfig"
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/pkgconfig"
+    )
+endif()
+if (DEFINED ENV{VCPKG_ROOT} AND WIN32)
+    list(APPEND VCPKG_PC_HINTS
+        "$ENV{VCPKG_ROOT}/installed/x64-windows/lib/pkgconfig"
+        "$ENV{VCPKG_ROOT}/installed/x64-windows/share/pkgconfig"
+    )
+endif()
+if (DEFINED ENV{VCPKG_INSTALLATION_ROOT} AND WIN32)
+    list(APPEND VCPKG_PC_HINTS
+        "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib/pkgconfig"
+        "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/share/pkgconfig"
+    )
+endif()
+
+foreach(PC_DIR IN LISTS VCPKG_PC_HINTS)
+    if (EXISTS "${PC_DIR}")
+        set(ENV{PKG_CONFIG_PATH} "${PC_DIR};$ENV{PKG_CONFIG_PATH}")
+    endif()
+endforeach()
 
 find_package(GTK4 CONFIG QUIET)
 if (TARGET GTK4::GTK4)
     message(STATUS "Found GTK4 via CMake Config: GTK4::GTK4")
     set(GTK4_TARGET GTK4::GTK4)
+elseif (TARGET GTK4::gtk4)
+    message(STATUS "Found GTK4 via CMake Config: GTK4::gtk4")
+    set(GTK4_TARGET GTK4::gtk4)
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
     set(GTK4_TARGET PkgConfig::GTK4)
 endif()
 
-find_program(GLIB_COMPILE_RESOURCES NAMES glib-compile-resources)
+find_program(GLIB_COMPILE_RESOURCES
+    NAMES glib-compile-resources
+    HINTS
+        "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows/tools/glib"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/tools/glib"
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/glib"
+        "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/glib"
+        "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/tools/glib"
+)
 find_program(BLUEPRINT_COMPILER NAMES blueprint-compiler)
 
 # ==============================================================================
@@ -77,9 +125,9 @@ endif()
 
 FetchContent_Declare(
     curl
-    GIT_REPOSITORY https://github.com/curl/curl.git
-    GIT_TAG curl-8_10_1
-    GIT_SHALLOW TRUE
+    URL https://github.com/curl/curl/releases/download/curl-8_10_1/curl-8.10.1.tar.gz
+    URL_HASH SHA256=d15ebab765d793e2e96db090f0e172d127859d78ca6f6391d7eafecfd894bbc0
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 message(STATUS "Fetching and configuring self-contained static libcurl...")
